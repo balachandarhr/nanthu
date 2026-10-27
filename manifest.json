@@ -1,0 +1,19 @@
+{
+  "name": "Nanthu",
+  "short_name": "Nanthu",
+  "description": "Nanthu - your Malayali AI friend who talks with you, answers your questions and acts things out.",
+  "id": "./",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "theme_color": "#1f4a40",
+  "background_color": "#13201c",
+  "lang": "en-IN",
+  "categories": ["entertainment", "lifestyle"],
+  "icons": [
+    {"src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+    {"src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+    {"src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}
+  ]
+}

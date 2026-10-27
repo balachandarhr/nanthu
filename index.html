@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<title>Nanthu</title>
+<meta name="description" content="Nanthu - your Malayali AI friend who talks with you, answers your questions and acts things out.">
+<meta name="theme-color" content="#1f4a40">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Nanthu">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="stage" aria-hidden="true">
+  <img id="backdrop" src="videos/poster.jpg" alt="">
+  <div id="vbox"><img id="poster" src="videos/poster.jpg" alt=""></div>
+</div>
+
+<header id="top">
+  <div class="pill"><img src="icons/icon-192.png" alt=""><div><b>Nanthu</b><span id="status">Starting...</span></div></div>
+  <div class="tbtns">
+    <button type="button" id="chatBtn" class="ibtn" aria-label="Open chat"><svg viewBox="0 0 24 24"><path d="M4 5h16v10H8l-4 4z"/></svg></button>
+    <button type="button" id="gearBtn" class="ibtn" aria-label="Settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.8v2.6M12 18.6v2.6M2.8 12h2.6M18.6 12h2.6M5.5 5.5l1.8 1.8M16.7 16.7l1.8 1.8M5.5 18.5l1.8-1.8M16.7 7.3l1.8-1.8"/></svg></button>
+  </div>
+</header>
+
+<div id="bubble" role="status" aria-live="polite"></div>
+<div id="toast" role="alert"></div>
+
+<section id="drawer" aria-label="Chat">
+  <div class="dhead" id="dhead"><span class="grip"></span><b>Chat with Nanthu</b>
+    <span><button type="button" id="clearBtn" class="tbtn">Clear chat</button><button type="button" id="drawerClose" class="tbtn" aria-label="Close chat">&#10005;</button></span></div>
+  <div id="log"></div>
+</section>
+
+<footer id="bottom">
+  <div id="handle" aria-hidden="true"><span></span></div>
+  <div id="chips">
+    <button type="button" data-say="Hi Nanthu! How are you?">&#128075; Hi</button>
+    <button type="button" data-say="dance">&#128131; Dance</button>
+    <button type="button" data-say="Tell me a joke">&#128514; Joke</button>
+    <button type="button" data-say="wave">Wave</button>
+    <button type="button" data-say="namaste">&#128591; Namaste</button>
+    <button type="button" data-say="clap">&#128079; Clap</button>
+    <button type="button" data-say="laugh">Laugh</button>
+    <button type="button" data-say="think">Think</button>
+    <button type="button" data-say="be surprised">Wow</button>
+    <button type="button" data-say="help">Help</button>
+  </div>
+  <form id="bar" autocomplete="off">
+    <input id="cmd" type="text" enterkeyhint="send" placeholder="Talk to Nanthu..." aria-label="Message">
+    <button type="button" id="hf" class="rbtn" aria-pressed="false" aria-label="Hands-free conversation"><svg viewBox="0 0 24 24"><path d="M4 14v-2a8 8 0 0 1 16 0v2"/><rect x="3" y="13" width="4" height="7" rx="1.5"/><rect x="17" y="13" width="4" height="7" rx="1.5"/></svg></button>
+    <button type="button" id="mic" class="rbtn" aria-label="Speak"><svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"/></svg></button>
+    <button type="submit" id="send" class="rbtn" aria-label="Send"><svg viewBox="0 0 24 24"><path d="M4 12l16-8-6 16-2.5-6.5z"/></svg></button>
+  </form>
+</footer>
+
+<div id="splash">
+  <img class="sbg" src="videos/poster.jpg" alt="">
+  <button type="button" id="startBtn">
+    <img src="icons/icon-512.png" alt="Nanthu">
+    <b>Tap to start talking to Nanthu</b>
+    <small>Sound on &middot; she will speak to you</small>
+  </button>
+</div>
+
+<div id="setup" class="overlay" role="dialog" aria-modal="true" aria-labelledby="setupTitle">
+  <div class="card">
+    <h2 id="setupTitle">Make Nanthu your AI friend &ndash; free</h2>
+    <p>To chat about anything and answer your questions, Nanthu needs a free AI key from Google (about a minute):</p>
+    <ol>
+      <li>Open <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a> and sign in with Google.</li>
+      <li>Tap <b>Create API key</b> and <b>copy</b> it.</li>
+      <li>Paste it below and tap <b>Save &amp; start</b>.</li>
+    </ol>
+    <input id="setupKey" type="password" placeholder="Paste your Gemini API key" autocomplete="off" spellcheck="false">
+    <p class="muted">Saved only on this phone and sent only to Google's Gemini API.</p>
+    <div class="row">
+      <button type="button" id="setupSave" class="primary">Save &amp; start</button>
+      <button type="button" id="setupChrome" style="display:none">Use Chrome AI</button>
+      <button type="button" id="setupMore">Other AI</button>
+      <button type="button" id="setupLater">Not now</button>
+    </div>
+    <p id="setupOut" class="muted"></p>
+    <p class="muted">Without a key she still does simple things: <i>dance</i>, <i>wave</i>, <i>tell me a joke</i>.</p>
+  </div>
+</div>
+
+<div id="settings" class="overlay" role="dialog" aria-modal="true" aria-label="Settings">
+  <div class="card sheet">
+    <div class="shead"><h2>Settings</h2><button type="button" id="setClose" class="tbtn" aria-label="Close">&#10005;</button></div>
+    <h3>AI brain</h3>
+    <div class="radios">
+      <label><input type="radio" name="prov" value="gemini"> Gemini (free key)</label>
+      <label><input type="radio" name="prov" value="openai"> OpenAI-compatible</label>
+      <label><input type="radio" name="prov" value="chrome"> Chrome built-in <span id="chromeState"></span></label>
+    </div>
+    <div class="sec" data-sec="gemini">
+      <label>Gemini API key <span class="kfield"><input id="gKey" type="password" autocomplete="off" spellcheck="false"><button type="button" data-show="gKey" class="tbtn">Show</button></span></label>
+      <label>Model <input id="gModel" list="gModels"><datalist id="gModels"><option value="gemini-3.8-flash"><option value="gemini-3.5-flash-lite"><option value="gemini-3.8-pro"></datalist></label>
+      <p class="muted">Get a free key at <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>.</p>
+    </div>
+    <div class="sec" data-sec="openai">
+      <label>Service <select id="oPreset"><option value="openai">OpenAI</option><option value="xai">xAI (Grok)</option><option value="groq">Groq</option><option value="openrouter">OpenRouter</option><option value="pollinations">Pollinations (free, no key)</option><option value="custom">Custom</option></select></label>
+      <label>Base URL <input id="oBase" spellcheck="false"></label>
+      <label>API key <span class="kfield"><input id="oKey" type="password" autocomplete="off" spellcheck="false"><button type="button" data-show="oKey" class="tbtn">Show</button></span></label>
+      <label>Model <input id="oModel" spellcheck="false"></label>
+    </div>
+    <div class="sec" data-sec="chrome">
+      <p class="muted">Uses Chrome's on-device AI (desktop Chrome with the built-in model). No key, works offline once downloaded.</p>
+      <button type="button" id="chromeDl">Download / prepare Chrome AI</button>
+    </div>
+    <div class="row"><button type="button" id="setTest">Test</button><button type="button" id="setForget">Forget keys</button></div>
+    <p id="testOut"></p>
+    <h3>Voice</h3>
+    <label class="chk"><input type="checkbox" id="hfChk"> Hands-free conversation (listen again after she speaks)</label>
+    <label>Her voice <select id="voiceSel"></select></label>
+    <h3>Memory</h3>
+    <p class="muted">What Nanthu remembers about you (kept only on this phone):</p>
+    <ul id="factList"></ul>
+    <div class="row"><button type="button" id="forgetMe">Forget what she knows about me</button></div>
+    <div class="row sticky"><button type="button" id="setSave" class="primary">Save</button></div>
+  </div>
+</div>
+<script src="app.js"></script>
+</body>
+</html>
