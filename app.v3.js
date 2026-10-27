@@ -2,6 +2,7 @@
    No server: AI calls go straight from the phone to the provider the user chose. */
 (() => {
 'use strict';
+const APP_VER = 'v3';
 const $ = s => document.querySelector(s);
 const body = document.body, statusEl = $('#status'), input = $('#cmd'), bubble = $('#bubble');
 
@@ -46,52 +47,125 @@ function addFacts(list){
 }
 function userName(){ const f = FACTS.find(x => factKey(x) === 'name'); return f ? f.split(':').slice(1).join(':').trim().split(/[,(]/)[0].trim().slice(0, 30) : ''; }
 
-/* ---------- video engine ---------- */
+/* ---------- video engine ----------
+   Three persistent <video> layers: idle (loop), talk (loop) and act (action clips, src swapped).
+   All three are unlocked inside the start tap, so later play() calls (after async AI replies) are allowed
+   on iOS / Android even in Low Power / Data Saver mode. A watchdog keeps the visible layer advancing. */
 const CLIPS = ['idle','talk','wave','laugh','dance','clap','think','sad','surprised','namaste'];
 const LOOPS = {idle:1, talk:1};
 const vbox = $('#vbox'), posterEl = $('#poster');
-const vids = {};
-let vOn = null, clipNow = null, talkingNow = false, vFailed = false, readyCount = 0, clipEndCb = null, clipTimer = null;
-CLIPS.forEach(n => {
+const DBG = {log: [], rejects: 0, errors: 0};
+function dlog(m){ const t = new Date().toTimeString().slice(0, 8); DBG.log.push(t + ' ' + m); if(DBG.log.length > 40) DBG.log.shift(); }
+function mkVideo(name, src, loop){
   const v = document.createElement('video');
-  v.muted = true; v.defaultMuted = true; v.playsInline = true; v.setAttribute('playsinline', ''); v.setAttribute('webkit-playsinline', '');
-  v.setAttribute('muted', ''); v.preload = 'auto'; v.loop = !!LOOPS[n]; v.src = 'videos/' + n + '.mp4'; v.dataset.clip = n;
-  v.addEventListener('canplaythrough', () => { if(!v._ok){ v._ok = 1; readyCount++; if(n === 'idle') updateVideo(); } else if(vOn === n && v.paused) playSafe(v); });
+  v.muted = true; v.defaultMuted = true; v.setAttribute('muted', '');
+  v.playsInline = true; v.setAttribute('playsinline', ''); v.setAttribute('webkit-playsinline', '');
+  v.setAttribute('disablepictureinpicture', ''); v.setAttribute('disableremoteplayback', '');
+  v.preload = 'auto'; v.loop = !!loop; v.dataset.layer = name;
+  v.src = src; v._src = src;
   v.addEventListener('error', () => {
-    // A load can break when the service worker takes control mid-stream (first visit): retry a couple of times.
-    v._tries = (v._tries || 0) + 1; v._err = v.error ? v.error.code : -1;
-    if(v._tries <= 3){ setTimeout(() => { v.src = 'videos/' + n + '.mp4'; v.load(); if(vOn === n) playSafe(v); }, 400 * v._tries); return; }
-    if(n === 'idle' || n === 'talk'){ vFailed = true; posterEl.classList.add('on'); }
+    DBG.errors++; const code = v.error ? v.error.code : -1; v._err = code;
+    dlog(`video error ${name} ${v._src} code=${code}`);
+    v._tries = (v._tries || 0) + 1;
+    if(v._tries <= 4) setTimeout(() => { v.src = v._src; try{ v.load(); }catch(e){} if(shouldPlay(name)) playV(v); }, 500 * v._tries);
+    else if(name === 'act' && clipNow) endClip();
   });
-  v.addEventListener('ended', () => { if(clipNow === n) endClip(); });
-  vbox.appendChild(v); vids[n] = v;
-});
+  v.addEventListener('playing', () => { v._tries = 0; if(name === layerOn()) showLayer(name); });
+  v.addEventListener('loadeddata', () => { if(name === 'idle' && !idleReady){ idleReady = true; } if(name === layerOn() && !v.paused) showLayer(name); });
+  vbox.insertBefore(v, posterEl.nextSibling); return v;
+}
+let clipNow = null, talkingNow = false, idleReady = false, unlocked = false, blocked = false, clipEndCb = null, clipTimer = null, clipStartTimer = null, actName = 'namaste', shown = null;
+const L = {idle: mkVideo('idle', 'videos/idle.mp4', true), talk: mkVideo('talk', 'videos/talk.mp4', true), act: mkVideo('act', 'videos/namaste.mp4', true)};
+L.act.preload = 'auto';
 posterEl.classList.add('on');
-function playSafe(v){ try{ const p = v.play(); if(p && p.catch) p.catch(() => {}); }catch(e){} }
-function wantedClip(){ return clipNow || (talkingNow ? 'talk' : 'idle'); }
+function layerOn(){ return clipNow ? 'act' : (talkingNow ? 'talk' : 'idle'); }
+function shouldPlay(name){ return started && !document.hidden && (name !== 'act' || !!clipNow); }
+function playV(v){
+  let p; try{ p = v.play(); }catch(e){ onReject(v, e); return Promise.resolve(false); }
+  if(p && p.then) return p.then(() => { if(blocked){ blocked = false; wakeEl.classList.remove('show'); } return true; }, e => { onReject(v, e); return false; });
+  return Promise.resolve(true);
+}
+function onReject(v, e){
+  DBG.rejects++; const n = e && e.name || 'Error'; dlog(`play() rejected ${v.dataset.layer}: ${n} ${(e && e.message || '').slice(0, 60)}`);
+  if(n === 'NotAllowedError' && started){ blocked = true; wakeEl.classList.add('show'); }
+}
+function showLayer(name){
+  const v = L[name]; if(!v || v.readyState < 2) return;
+  shown = name;
+  v.classList.add('on'); posterEl.classList.remove('on');
+  Object.keys(L).forEach(k => { if(k !== name){ L[k].style.zIndex = '1'; setTimeout(() => { if(shown !== k) L[k].classList.remove('on'); }, 300); } });
+  v.style.zIndex = '2';
+  if(name !== 'act') setTimeout(() => { if(!clipNow && !L.act.paused) try{ L.act.pause(); }catch(e){} }, 320);
+}
 function updateVideo(){
-  const n = wantedClip(), v = vids[n];
-  if(vFailed || !v) return;
-  if(vOn === n){ if(v.paused) playSafe(v); return; }
-  const prev = vOn; vOn = n;
-  if(!LOOPS[n]){ try{ v.currentTime = 0; }catch(e){} }
-  playSafe(v);
-  const show = () => {
-    v.classList.add('on'); posterEl.classList.remove('on');
-    Object.keys(vids).forEach(k => { if(k !== n) vids[k].classList.remove('on'); });
-    if(prev && !LOOPS[prev]) setTimeout(() => { if(vOn !== prev) try{ vids[prev].pause(); }catch(e){} }, 320);
-  };
-  if(v.readyState >= 2) show(); else { const h = () => { v.removeEventListener('playing', h); if(vOn === n) show(); }; v.addEventListener('playing', h); setTimeout(h, 900); }
+  if(!started) return;
+  const name = layerOn(), v = L[name];
+  if(v.paused) playV(v);
+  if(v.readyState >= 2 && !v.paused) showLayer(name);
+  else if(v.readyState >= 2 && name !== 'act') showLayer(name);
 }
-function startLoops(){ ['idle', 'talk'].forEach(n => playSafe(vids[n])); CLIPS.forEach(n => { if(!LOOPS[n]){ const v = vids[n]; playSafe(v); setTimeout(() => { if(vOn !== n){ try{ v.pause(); v.currentTime = 0; }catch(e){} } }, 60); } }); updateVideo(); }
+// Called synchronously inside the start tap: every layer gets a gesture-initiated play().
+function unlockVideos(){
+  Object.keys(L).forEach(k => {
+    const v = L[k]; v.muted = true;
+    playV(v).then(ok => { if(ok && k === 'act' && !clipNow){ try{ v.pause(); }catch(e){} } });
+  });
+  unlocked = true; dlog('videos unlocked by tap');
+}
+const startLoops = unlockVideos;
+function prefetchClips(){   // warm the HTTP cache so action clips start fast (best effort)
+  let i = 0; const list = CLIPS.filter(n => !LOOPS[n]);
+  const next = () => { const n = list[i++]; if(!n) return; fetch('videos/' + n + '.mp4').then(r => r.blob()).catch(() => {}).then(() => setTimeout(next, 150)); };
+  setTimeout(next, 2500);
+}
 function playClip(n, cb){
-  clearTimeout(clipTimer); const old = clipEndCb; clipEndCb = null; if(old) old();
-  clipNow = n; clipEndCb = cb || null; updateVideo();
-  const d = (vids[n] && isFinite(vids[n].duration) && vids[n].duration) || 5.1;
-  clipTimer = setTimeout(endClip, d * 1000 + 600);          // safety if 'ended' never fires
+  clearTimeout(clipTimer); clearTimeout(clipStartTimer);
+  const old = clipEndCb; clipEndCb = null; if(old) old();
+  clipNow = n; clipEndCb = cb || null;
+  const v = L.act, src = 'videos/' + n + '.mp4';
+  if(v._src !== src){ v._src = src; v._tries = 0; v.src = src; try{ v.load(); }catch(e){} }
+  else if(v.ended || v.currentTime > 0.3){
+    // replay: seek only when fully loaded; otherwise reload the source (seeking mid-preload can stall decoders)
+    if(v.readyState >= 3){ try{ v.currentTime = 0; }catch(e){} } else { v.src = src; try{ v.load(); }catch(e){} }
+  }
+  actName = n; dlog('clip ' + n); actLastT = 0; v._playingClip = n;
+  playV(v);
+  const arm = () => { clearTimeout(clipTimer); const d = (isFinite(v.duration) && v.duration) || 5.1; clipTimer = setTimeout(() => { if(clipNow === n) endClip(); }, Math.max(1000, (d - v.currentTime) * 1000) + 700); };
+  const onPlaying = () => { v.removeEventListener('playing', onPlaying); if(clipNow === n){ clearTimeout(clipStartTimer); showLayer('act'); arm(); } };
+  v.addEventListener('playing', onPlaying);
+  if(!v.paused && v.readyState >= 3) onPlaying();
+  clipStartTimer = setTimeout(() => { if(clipNow === n && (v.paused || v.readyState < 2)){ dlog('clip ' + n + ' did not start'); v.removeEventListener('playing', onPlaying); endClip(); } }, 4000);
+  clipTimer = setTimeout(() => { if(clipNow === n) endClip(); }, 12000);   // hard cap
 }
-function endClip(){ clearTimeout(clipTimer); clipNow = null; updateVideo(); const cb = clipEndCb; clipEndCb = null; if(cb) cb(); }
+function endClip(){ clearTimeout(clipTimer); clearTimeout(clipStartTimer); clipNow = null; updateVideo(); const cb = clipEndCb; clipEndCb = null; if(cb) cb(); }
+// The action layer loops (some engines stall non-looping clips); we end the clip ourselves at the end / wrap-around.
+let actLastT = 0;
+L.act.addEventListener('ended', () => { if(clipNow) endClip(); });
+L.act.addEventListener('timeupdate', () => {
+  const v = L.act, t = v.currentTime, d = v.duration;
+  if(!clipNow || v._playingClip !== clipNow || !(v.currentSrc || '').endsWith('/' + clipNow + '.mp4')){ actLastT = 0; return; }   // stale event from previous clip
+  if((isFinite(d) && d > 1 && t >= d - 0.15) || (actLastT > 1 && t + 0.5 < actLastT)){ actLastT = 0; try{ v.pause(); }catch(e){} endClip(); return; }
+  actLastT = t;
+});
 function setTalking(on){ talkingNow = !!on; updateVideo(); }
+// watchdog: keep the visible layer (and both loops) actually advancing
+const lastT = {};
+setInterval(() => {
+  if(!started || document.hidden) return;
+  const want = layerOn();
+  ['idle', 'talk', 'act'].forEach(k => {
+    if(k === 'act' && !clipNow) return;
+    const v = L[k];
+    if(v.paused && !(k === 'act' && v.ended)){ playV(v); }
+    else if(k === want && lastT[k] === v.currentTime && v.readyState >= 2 && !v.ended){ dlog('stall ' + k + ' t=' + v.currentTime.toFixed(2)); playV(v); }
+    lastT[k] = v.currentTime;
+  });
+  if(shown !== want && L[want].readyState >= 2 && !L[want].paused) showLayer(want);
+}, 1000);
+const wakeEl = $('#wake');
+wakeEl.addEventListener('click', () => { unlockVideos(); if(synth){ try{ synth.resume(); }catch(e){} } wakeEl.classList.remove('show'); blocked = false; updateVideo(); });
+// any tap anywhere re-asserts playback (cheap, helps after iOS interruptions)
+document.addEventListener('touchend', () => { if(started) Object.keys(L).forEach(k => { if(shouldPlay(k) && L[k].paused) playV(L[k]); }); }, {passive: true});
 function cssMove(name, ms, cb){ vbox.classList.remove('nod', 'shake', 'jump'); void vbox.offsetWidth; vbox.classList.add(name); setTimeout(() => { vbox.classList.remove(name); if(cb) cb(); }, ms); }
 
 /* ---------- actions ---------- */
@@ -116,7 +190,7 @@ function nextAction(gen){
   if(gen !== actGen) return;
   const a = actQueue.shift(); if(!a){ actRunning = false; return; }
   actRunning = true;
-  if(CLIP_ACTIONS[a] && !vFailed) playClip(a, () => nextAction(gen));
+  if(CLIP_ACTIONS[a]) playClip(a, () => nextAction(gen));
   else if(a === 'nod' || a === 'shake') cssMove(a, 1150, () => nextAction(gen));
   else if(a === 'jump') cssMove('jump', 950, () => nextAction(gen));
   else cssMove('jump', 950, () => nextAction(gen));
@@ -163,7 +237,7 @@ function say(text, opts){
   const spoken = cleanSpeech(opts.speak || text);
   const est = Math.min(45000, Math.max(1300, spoken.length * 68)) + 400;
   pauseListening();
-  const real = !!(synth && synth.getVoices && synth.getVoices().length);
+  let ended = false; const t0 = Date.now();
   if(synth && spoken){
     try{
       synth.cancel();
@@ -172,14 +246,23 @@ function say(text, opts){
         const u = new SpeechSynthesisUtterance(part);
         if(voice){ u.voice = voice; u.lang = voice.lang; } else u.lang = 'en-IN';
         u.pitch = 1.08; u.rate = 1.0;
-        if(i === parts.length - 1) u.onend = done;
-        u.onerror = ev => { if(ev && (ev.error === 'interrupted' || ev.error === 'canceled')) return; if(real && i === parts.length - 1) done(); };
+        if(i === 0) u.onstart = () => dlog('speech start');
+        if(i === parts.length - 1) u.onend = () => { ended = true; dlog('speech end'); if(Date.now() - t0 > est * 0.35) done(); };
+        u.onerror = ev => { dlog('speech error ' + (ev && ev.error)); };
         synth.speak(u);
       });
       if(synth.paused) synth.resume();
-    }catch(e){}
+    }catch(e){ dlog('speak failed ' + e); }
   }
-  talkTimer = setTimeout(done, real ? est * 2 + 4000 : est);   // safety net / no-voice devices
+  // Talking loop runs from now for the estimated duration; if the engine says it is still speaking, keep going.
+  const check = () => {
+    if(seq !== speakSeq) return;
+    const el = Date.now() - t0;
+    const still = synth && !ended && (synth.speaking || synth.pending);
+    if(still && el < est * 2.5 + 3000){ talkTimer = setTimeout(check, 300); return; }
+    done();
+  };
+  talkTimer = setTimeout(check, est);
 }
 function isTalking(){ return talkingNow; }
 function hush(){ speakSeq++; clearTimeout(talkTimer); if(synth){ try{ synth.cancel(); }catch(e){} } setTalking(false); }
@@ -694,7 +777,7 @@ function greeting(){
 async function start(){
   if(started) return; started = true;
   if(synth){ try{ const u = new SpeechSynthesisUtterance(' '); u.volume = 0; synth.speak(u); }catch(e){} }  // unlock speech (iOS)
-  startLoops();
+  unlockVideos(); updateVideo(); prefetchClips();
   $('#splash').classList.add('hide'); setTimeout(() => $('#splash').remove(), 500);
   const g = greeting(); logMsg('bot', g.say, g.actions); perform(g);
   await checkChrome(); setStatus();
@@ -703,15 +786,43 @@ async function start(){
 }
 $('#startBtn').addEventListener('click', start);
 document.addEventListener('keydown', e => { if(e.key === 'Escape'){ setEl.classList.remove('show'); setupEl.classList.remove('show'); openDrawer(false); } });
-document.addEventListener('visibilitychange', () => { if(document.hidden){ hush(); pauseListening(); } else if(started){ updateVideo(); playSafe(vids.idle); } });
+document.addEventListener('visibilitychange', () => { if(document.hidden){ hush(); pauseListening(); } else if(started){ Object.keys(L).forEach(k => { if(shouldPlay(k)) playV(L[k]); }); updateVideo(); } });
+window.addEventListener('pageshow', () => { if(started) updateVideo(); });
 window.addEventListener('online', setStatus); window.addEventListener('offline', setStatus);
 renderLog(); renderFacts(); layout(); setStatus(); checkChrome().then(setStatus);
 if('serviceWorker' in navigator && /^https?:$/.test(location.protocol)){
-  window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(e => console.info('SW registration failed', e)));
+  const hadSW = !!navigator.serviceWorker.controller;
+  window.addEventListener('load', () => navigator.serviceWorker.register('sw.js', {updateViaCache: 'none'}).then(r => { dlog('SW registered'); try{ r.update(); }catch(e){} }).catch(e => { dlog('SW registration failed ' + e); console.info('SW registration failed', e); }));
+  // an updated worker took over: if she hasn't started yet, reload once so everything comes from the new version
+  navigator.serviceWorker.addEventListener('controllerchange', () => { dlog('SW controller changed'); if(hadSW && !started && !sessionStorage.getItem('nanthu.swreload')){ sessionStorage.setItem('nanthu.swreload', '1'); location.reload(); } });
 }
 
 /* test / debug hooks */
-window.nanthu = {handle, start, parseReply};
+window.nanthu = {handle, start, parseReply, say, runActions};
 window.nanthuDebug = () => ({provider: activeProvider(), ready: aiReady(), pending: aiPending, history: HISTORY.length, transcript: TRANSCRIPT.length, facts: FACTS.slice(), listening, handsFree: CFG.handsFree, talking: isTalking(), lastReply, started});
-window.nanthuLive = () => ({on: vOn, clip: clipNow, talking: talkingNow, failed: vFailed, ready: readyCount, t: vOn && vids[vOn] ? +vids[vOn].currentTime.toFixed(2) : null, paused: vOn && vids[vOn] ? vids[vOn].paused : null});
+function vInfo(k){ const v = L[k]; return {src: (v._src || '').replace(/^.*\//, ''), rs: v.readyState, ns: v.networkState, paused: v.paused, t: +v.currentTime.toFixed(2), on: v.classList.contains('on'), err: v._err || null}; }
+window.nanthuLive = () => { const k = shown || layerOn(), v = L[k];
+  return {on: k === 'act' ? actName : k, layer: k, want: layerOn(), clip: clipNow, talking: talkingNow, failed: false, blocked, unlocked, ready: Object.keys(L).filter(x => L[x].readyState >= 3).length,
+    t: +v.currentTime.toFixed(2), paused: v.paused, layers: {idle: vInfo('idle'), talk: vInfo('talk'), act: vInfo('act')}, rejects: DBG.rejects, errors: DBG.errors}; };
+/* hidden debug panel: ?debug=1 or tap the name badge 5 times */
+const dbgEl = $('#dbg'); let dbgOn = /[?&]debug=1/.test(location.search), dbgTaps = [];
+async function swInfo(){
+  if(!('serviceWorker' in navigator)) return 'no SW support';
+  let s = navigator.serviceWorker.controller ? 'controlled' : 'not controlling';
+  try{ const r = await navigator.serviceWorker.getRegistration(); if(r) s += ' | active:' + (r.active ? r.active.state : '-') + (r.waiting ? ' waiting' : '') + (r.installing ? ' installing' : ''); }catch(e){}
+  try{ s += ' | caches:' + (await caches.keys()).join(','); }catch(e){}
+  return s;
+}
+let swTxt = '';
+function renderDbg(){
+  if(!dbgOn){ dbgEl.classList.remove('show'); return; }
+  dbgEl.classList.add('show');
+  const live = window.nanthuLive();
+  const rows = ['idle', 'talk', 'act'].map(k => { const i = live.layers[k]; return `${k.padEnd(4)} ${i.src.padEnd(13)} rs${i.rs} ns${i.ns} ${i.paused ? 'PAUSED' : 'play'} t=${i.t}${i.on ? ' [ON]' : ''}${i.err ? ' err' + i.err : ''}`; });
+  dbgEl.textContent = `Nanthu debug ${APP_VER}\nwant=${live.want} shown=${shown} clip=${clipNow} talking=${talkingNow} unlocked=${unlocked} blocked=${blocked}\nrejects=${DBG.rejects} errors=${DBG.errors} voices=${synth && synth.getVoices ? synth.getVoices().length : 'none'} speaking=${synth ? synth.speaking : '-'}\n${rows.join('\n')}\nSW: ${swTxt}\n${navigator.userAgent.slice(0, 110)}\n--\n${DBG.log.slice(-12).join('\n')}`;
+}
+setInterval(() => { if(dbgOn){ renderDbg(); swInfo().then(t => swTxt = t); } }, 600);
+$('#top .pill').addEventListener('click', () => { const now = Date.now(); dbgTaps = dbgTaps.filter(t => now - t < 3000); dbgTaps.push(now); if(dbgTaps.length >= 5){ dbgTaps = []; dbgOn = !dbgOn; renderDbg(); } });
+if(dbgOn) renderDbg();
+window.nanthuDbgLog = () => DBG.log.slice();
 })();

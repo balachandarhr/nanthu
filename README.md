@@ -3,7 +3,7 @@
 Nanthu is a portrait phone app. She talks to you, answers your questions and chats like a close friend from Kochi, with video actions: wave, namaste, dance, laugh, clap, think, sad and surprised. It is a static Progressive Web App (PWA): just HTML, CSS and JS plus ten short videos (about 10 MB). It has no server of its own.
 
 ## Files
-index.html, style.css, app.js, manifest.json, sw.js (offline cache), icons/, videos/
+index.html, style.v3.css, app.v3.js, manifest.json, sw.js (caches the app shell; videos load directly), icons/, videos/
 
 ## Try it on a computer
     cd nanthu-mobile && python3 -m http.server 8000
@@ -32,10 +32,16 @@ Without a key she still does simple things: dance, wave, tell a joke, the time, 
 - Your key is stored only in this browser's localStorage. It is sent only to the AI provider you choose.
 - Chat history and a short list of facts about you (name, likes) are kept on the phone so she remembers you. To delete them, use "Clear chat" in the chat drawer, or Settings → "Forget me".
 
+## If she looks frozen
+- Close the app completely and open it again (or reload the page twice). This lets the new version replace the old one.
+- If a **"✨ Tap to wake Nanthu"** button appears, tap it. Battery saver or Data Saver can pause videos, and the tap restarts them.
+- To get diagnostic info, open the site with `?debug=1` at the end (for example `https://…/nanthu/?debug=1`), or tap her name badge 5 times. A panel shows the state of each video, any play errors, and the service worker status. Take a screenshot of it.
+
 ## Limitations
 - **Voice input on iPhone:** Safari's speech recognition is limited and often doesn't work in home-screen apps. Use the 🎤 dictation key on the iPhone keyboard instead. On Android Chrome the mic and hands-free mode work, but there is a short beep each time the mic reopens, and voice needs internet.
 - **Voice output:** she uses the phone's built-in text-to-speech voice, so quality varies by device (Settings → voice).
 - **Screen lock:** iOS may ignore the portrait lock. iOS may also clear the app's storage if you don't use it for a few weeks.
 - **Free AI keys** have rate limits. If she says "too many questions", wait a minute.
 - She can't browse the web, so very recent news may be out of date.
+- Her videos stream from the website. They need internet the first time, and after that the browser's cache keeps them.
 - Her videos are AI-generated.
