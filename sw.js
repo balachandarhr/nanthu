@@ -2,7 +2,7 @@
    Videos (.mp4) and AI requests are NOT intercepted: the browser loads video directly with its own
    Range handling (iOS Safari is strict about this), and the HTTP cache keeps them warm. */
 const VERSION = 'nanthu-v4';
-const SHELL = ['./', 'index.html', 'style.v4.css', 'app.v4.js', 'manifest.json',
+const SHELL = ['./', 'index.html', 'style.v4.css?b=2', 'app.v4.js?b=2', 'manifest.json',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-maskable-512.png', 'icons/apple-touch-icon.png', 'icons/favicon-32.png', 'videos/poster.jpg?v=4'];
 
 self.addEventListener('install', e => {

@@ -15,11 +15,11 @@ if(/Android/i.test(navigator.userAgent)){ const m = document.querySelector('meta
 <link rel="manifest" href="manifest.json">
 <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
-<link rel="stylesheet" href="style.v4.css">
+<link rel="stylesheet" href="style.v4.css?b=2">
 </head>
 <body>
 <div id="stage" aria-hidden="true">
-  <img id="backdrop" src="videos/poster.jpg?v=4" alt="">
+  <img id="backdrop" src="videos/poster.jpg?v=4" alt=""><div id="bdshade"></div>
   <div id="vbox"><img id="poster" src="videos/poster.jpg?v=4" alt=""><div id="vfade"></div></div>
 </div>
 
@@ -131,6 +131,6 @@ if(/Android/i.test(navigator.userAgent)){ const m = document.querySelector('meta
     <div class="row sticky"><button type="button" id="setSave" class="primary">Save</button></div>
   </div>
 </div>
-<script src="app.v4.js"></script>
+<script src="app.v4.js?b=2"></script>
 </body>
 </html>

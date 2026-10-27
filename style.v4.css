@@ -7,7 +7,8 @@ button{font:inherit;color:inherit;cursor:pointer}
 svg{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
 
 #stage{position:absolute;inset:0;overflow:hidden;background:#0f0e17}
-#backdrop{position:absolute;inset:-8%;width:116%;height:116%;object-fit:cover;object-position:50% 0;filter:blur(22px) brightness(.62) saturate(1.15)}
+#backdrop{position:absolute;inset:-8%;width:116%;height:116%;object-fit:cover;object-position:50% 0;filter:blur(22px) brightness(.55) saturate(1.2)}
+#bdshade{position:absolute;inset:0;pointer-events:none;background:linear-gradient(to bottom,rgba(15,14,23,.15) 0,rgba(15,14,23,.55) calc(var(--vTop,200px) * .6),rgba(15,14,23,.97) var(--vTop,200px),rgba(15,14,23,.97) 100%)}
 #vbox{position:absolute;left:0;top:0;width:100%;height:100%;transform-origin:50% 100%}
 #vbox video,#poster{z-index:1;position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity .26s ease;pointer-events:none}
 #vbox video.on,#poster.on{opacity:1}
@@ -112,8 +113,8 @@ body.chat-open #drawer{transform:none}
 @media (min-width:700px){ .overlay{align-items:center} .card{border-radius:24px;padding-bottom:20px} #bubble{max-width:460px} }
 
 /* fades drawn as overlays (no CSS masks on the video's parent: masks can freeze/blank video on iOS/Android GPUs) */
-#vfade{position:absolute;inset:0;z-index:3;pointer-events:none;background:linear-gradient(to bottom,rgba(15,14,23,.9) 0,rgba(15,14,23,0) 9%)}
-#vbox.box #vfade{background:linear-gradient(to bottom,rgba(15,14,23,.9) 0,rgba(15,14,23,0) 9%),linear-gradient(to right,rgba(15,14,23,.85) 0,rgba(15,14,23,0) 8%,rgba(15,14,23,0) 92%,rgba(15,14,23,.85) 100%)}
+#vfade{position:absolute;inset:0;z-index:3;pointer-events:none;background:linear-gradient(to bottom,rgba(15,14,23,.97) 0,rgba(15,14,23,.6) 4%,rgba(15,14,23,.2) 9%,rgba(15,14,23,0) 15%)}
+#vbox.box #vfade{background:linear-gradient(to bottom,rgba(15,14,23,.97) 0,rgba(15,14,23,.6) 4%,rgba(15,14,23,.2) 9%,rgba(15,14,23,0) 15%),linear-gradient(to right,rgba(15,14,23,.85) 0,rgba(15,14,23,0) 8%,rgba(15,14,23,0) 92%,rgba(15,14,23,.85) 100%)}
 
 #wake{position:fixed;left:50%;top:42%;transform:translate(-50%,-50%);z-index:60;display:none;padding:14px 22px;border:0;border-radius:30px;background:rgba(250,249,255,.95);color:var(--deep);font-weight:700;font-size:17px;box-shadow:0 6px 24px rgba(0,0,0,.35)}
 #wake.show{display:block}

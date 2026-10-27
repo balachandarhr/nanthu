@@ -760,6 +760,7 @@ function layout(){
   const left = (W - Wv) / 2;
   Object.assign(vbox.style, {left: left + 'px', top: topGap + 'px', width: Wv + 'px', height: Hv + 'px'});
   vbox.classList.toggle('box', boxed);
+  document.documentElement.style.setProperty('--vTop', topGap + 'px');
   const headTop = topGap + Hv * 0.105;
   document.documentElement.style.setProperty('--bubTop', (top + 6) + 'px');
   document.documentElement.style.setProperty('--bubMax', Math.max(84, headTop - top - 14) + 'px');
