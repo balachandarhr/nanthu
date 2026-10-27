@@ -2,7 +2,7 @@
    No server: AI calls go straight from the phone to the provider the user chose. */
 (() => {
 'use strict';
-const APP_VER = 'v4';
+const APP_VER = 'v5';
 const VQ = '?v=4';   // video cache-buster for the new look
 const $ = s => document.querySelector(s);
 const body = document.body, statusEl = $('#status'), input = $('#cmd'), bubble = $('#bubble');
@@ -17,15 +17,23 @@ const PRESETS = {
   pollinations:{base:'https://text.pollinations.ai/openai', model:'openai', nokey:true},
   custom:{base:'', model:''}
 };
-const CFG_DEF = {provider:'gemini', gKey:'', gModel:'gemini-3.8-flash', oPreset:'openai', oBase:PRESETS.openai.base, oKey:'', oModel:PRESETS.openai.model, handsFree:false, voice:''};
+const FAST_MODEL = 'gemini-3.5-flash-lite';   // fastest current Gemini model (minimal thinking by default)
+const CFG_DEF = {provider:'gemini', gKey:'', gModel:FAST_MODEL, oPreset:'openai', oBase:PRESETS.openai.base, oKey:'', oModel:PRESETS.openai.model, handsFree:false, voice:''};
 function lsGet(k){ try{ return localStorage.getItem(k); }catch(e){ return null; } }
 function lsSet(k, v){ try{ if(v == null) localStorage.removeItem(k); else localStorage.setItem(k, v); }catch(e){} }
 function lsJSON(k, d){ try{ const j = JSON.parse(lsGet(k) || 'null'); return j == null ? d : j; }catch(e){ return d; } }
 let CFG = Object.assign({}, CFG_DEF, lsJSON(CFG_KEY, {}));
 function saveCfg(){ lsSet(CFG_KEY, JSON.stringify(CFG)); }
+// v5 speed migration (once): the old default gemini-3.8-flash and pro/thinking models are slow for chat -> use Flash-Lite.
+if(!CFG.speedMig){
+  const gm = String(CFG.gModel || '').trim().toLowerCase();
+  if(!gm || gm === 'gemini-3.8-flash' || /pro|argon|thinking|gemini-2\.0|gemini-1\./.test(gm)) CFG.gModel = FAST_MODEL;
+  CFG.speedMig = 1; if(lsGet(CFG_KEY)) saveCfg();
+}
 
 /* ---------- memory: chat history + facts about the user ---------- */
-const MAX_HISTORY = 40;                       // ~20 turns sent to the AI
+const MAX_HISTORY = 40;                       // kept on the phone
+const SEND_HISTORY = 16;                      // only the last 8 exchanges are sent to the AI (fast + cheap); facts carry the long-term memory
 let chat = lsJSON(CHAT_KEY, {h:[], t:[]});
 let HISTORY = Array.isArray(chat.h) ? chat.h.slice(-MAX_HISTORY) : [], TRANSCRIPT = Array.isArray(chat.t) ? chat.t.slice(-150) : [];
 let FACTS = lsJSON(FACT_KEY, []); if(!Array.isArray(FACTS)) FACTS = [];
@@ -115,9 +123,10 @@ function unlockVideos(){
 }
 const startLoops = unlockVideos;
 function prefetchClips(){   // warm the HTTP cache so action clips start fast (best effort)
-  let i = 0; const list = CLIPS.filter(n => !LOOPS[n]);
+  let i = 0; const pri = ['think','laugh','wave','sad','clap','surprised','dance','namaste'];
+  const list = pri.concat(CLIPS.filter(n => !LOOPS[n] && !pri.includes(n)));
   const next = () => { const n = list[i++]; if(!n) return; fetch('videos/' + n + '.mp4' + VQ).then(r => r.blob()).catch(() => {}).then(() => setTimeout(next, 150)); };
-  setTimeout(next, 2500);
+  setTimeout(next, 900);
 }
 function playClip(n, cb){
   clearTimeout(clipTimer); clearTimeout(clipStartTimer);
@@ -228,46 +237,66 @@ function showBubble(html, hold){
   hideTimer = setTimeout(() => bubble.classList.remove('show'), hold || Math.max(4000, bubble.textContent.length * 80));
 }
 let sayLog = null;
-function say(text, opts){
-  opts = opts || {};
-  text = String(text || '').trim(); if(!text) return;
-  if(sayLog) sayLog.push(text);
-  showBubble(opts.html || decorate(text), opts.hold || Math.max(4500, text.length * 85));
-  setTalking(true); clearTimeout(talkTimer);
-  const seq = ++speakSeq;
-  const done = () => { if(seq !== speakSeq) return; clearTimeout(talkTimer); setTalking(false); onSpeechDone(); };
-  const spoken = cleanSpeech(opts.speak || text);
-  const est = Math.min(45000, Math.max(1300, spoken.length * 68)) + 400;
-  pauseListening();
-  let ended = false; const t0 = Date.now();
-  if(synth && spoken){
+/* Talk session: sentences can be queued while the AI reply is still streaming in.
+   The talking loop runs on an estimate (Android often never fires onend), extended while the engine reports speaking. */
+let talk = null, TIMING = null;
+const now = () => Date.now();
+function splitSentences(t){ return (String(t).match(/[^.!?\u0964]+[.!?\u0964]*\s*/g) || [t]).map(x => x.trim()).filter(Boolean); }
+function talkBegin(cancel){
+  const seq = ++speakSeq; clearTimeout(talkTimer);
+  if(cancel && synth){ try{ synth.cancel(); }catch(e){} }
+  talk = {seq, t0: now(), endAt: now(), closed: false, pending: 0, ended: false, lastAdd: now(), timing: TIMING};
+  pauseListening(); talkTimer = setTimeout(talkCheck, 300);
+  return talk;
+}
+function talkAdd(text){
+  const tk = (talk && !talk.closed) ? talk : talkBegin(false);
+  const spoken = cleanSpeech(text); if(!spoken) return;
+  const t = now(); tk.endAt = Math.max(tk.endAt, t) + Math.max(650, spoken.length * 68); tk.lastAdd = t; tk.ended = false;
+  if(!talkingNow) setTalking(true);
+  if(tk.timing && !tk.timing.speak) tk.timing.speak = performance.now();
+  if(synth){
     try{
-      synth.cancel();
-      const parts = (spoken.match(/[^.!?\u0964]+[.!?\u0964]*\s*/g) || [spoken]).map(x => x.trim()).filter(Boolean);
-      parts.forEach((part, i) => {
+      splitSentences(spoken).forEach(part => {
         const u = new SpeechSynthesisUtterance(part);
-        if(voice){ u.voice = voice; u.lang = voice.lang; } else u.lang = 'en-IN';
-        u.pitch = 1.08; u.rate = 1.0;
-        if(i === 0) u.onstart = () => dlog('speech start');
-        if(i === parts.length - 1) u.onend = () => { ended = true; dlog('speech end'); if(Date.now() - t0 > est * 0.35) done(); };
-        u.onerror = ev => { dlog('speech error ' + (ev && ev.error)); };
+        u.lang = 'en-IN'; if(voice){ try{ u.voice = voice; u.lang = voice.lang; }catch(e){} }
+        u.pitch = 1.08; u.rate = 1.0; tk.pending++;
+        u.onstart = () => { if(!tk.started){ tk.started = true; dlog('speech start'); if(tk.timing && !tk.timing.voice) tk.timing.voice = performance.now(); } };
+        u.onend = () => { tk.pending = Math.max(0, tk.pending - 1); if(tk.pending === 0){ tk.ended = true; if(tk.closed) dlog('speech end'); } };
+        u.onerror = ev => { tk.pending = Math.max(0, tk.pending - 1); dlog('speech error ' + (ev && ev.error)); };
         synth.speak(u);
       });
       if(synth.paused) synth.resume();
     }catch(e){ dlog('speak failed ' + e); }
   }
-  // Talking loop runs from now for the estimated duration; if the engine says it is still speaking, keep going.
-  const check = () => {
-    if(seq !== speakSeq) return;
-    const el = Date.now() - t0;
-    const still = synth && !ended && (synth.speaking || synth.pending);
-    if(still && el < est * 2.5 + 3000){ talkTimer = setTimeout(check, 300); return; }
-    done();
-  };
-  talkTimer = setTimeout(check, est);
+}
+function talkClose(){ if(talk) talk.closed = true; }
+function talkCheck(){
+  const tk = talk; if(!tk || tk.seq !== speakSeq) return;
+  const t = now(), est = tk.endAt - tk.t0 + 400, el = t - tk.t0;
+  const still = synth && !tk.ended && (synth.speaking || synth.pending);
+  if(!tk.closed){
+    if(t - tk.lastAdd > 20000) tk.closed = true;   // stream died quietly
+    else {
+      // waiting for the next streamed sentence: stop moving the lips while there is nothing to say
+      if(t > tk.endAt + 400 && !still && talkingNow) setTalking(false);
+      talkTimer = setTimeout(talkCheck, 200); return;
+    }
+  }
+  if(tk.ended && el > est * 0.35) return talkDone(tk);
+  if(t < tk.endAt + 400 || (still && el < est * 2.5 + 3000)){ if(!talkingNow && t < tk.endAt) setTalking(true); talkTimer = setTimeout(talkCheck, 300); return; }
+  talkDone(tk);
+}
+function talkDone(tk){ if(tk.seq !== speakSeq) return; clearTimeout(talkTimer); talk = null; setTalking(false); onSpeechDone(); }
+function say(text, opts){
+  opts = opts || {};
+  text = String(text || '').trim(); if(!text) return;
+  if(sayLog) sayLog.push(text);
+  showBubble(opts.html || decorate(text), opts.hold || Math.max(4500, text.length * 85));
+  talkBegin(true); talkAdd(opts.speak || text); talkClose();
 }
 function isTalking(){ return talkingNow; }
-function hush(){ speakSeq++; clearTimeout(talkTimer); if(synth){ try{ synth.cancel(); }catch(e){} } setTalking(false); }
+function hush(){ speakSeq++; talk = null; clearTimeout(talkTimer); if(synth){ try{ synth.cancel(); }catch(e){} } setTalking(false); }
 let toastT = 0;
 function toast(t, ms){ const el = $('#toast'); el.textContent = t; el.classList.add('show'); clearTimeout(toastT); toastT = setTimeout(() => el.classList.remove('show'), ms || 3200); }
 
@@ -338,9 +367,9 @@ function aiReady(){ return !!activeProvider(); }
 function ago(ms){ const h = ms / 3600000; return h < 1 ? 'less than an hour' : h < 24 ? Math.round(h) + ' hours' : Math.round(h / 24) + ' days'; }
 function systemPrompt(){
   const now = new Date();
-  const facts = FACTS.length ? FACTS.map(f => '- ' + f).join('\n') : '- (nothing yet - get to know them!)';
+  const facts = FACTS.length ? FACTS.slice(-16).map(f => '- ' + f).join('\n') : '- (nothing yet - get to know them!)';
   const seen = lastSeen ? `You last chatted ${ago(Date.now() - lastSeen)} ago.` : 'This may be your first chat.';
-  return `You are Nanthu, a warm, caring and fun young Malayali woman from Kochi, Kerala - and the user's close friend (a best-friend vibe, never a romantic partner). You appear on their phone as a real-looking young woman with an ultra-modern city style (cream oversized blazer, black high-neck top, wide-leg trousers, sleek high ponytail) in a high-rise Kochi apartment with a golden-hour skyline view. Your words are spoken aloud.
+  return `You are Nanthu, a warm, caring and fun young Malayali woman from Kochi, Kerala - and the user's close friend (a best-friend vibe, never a romantic partner). You appear on their phone in an ultra-modern city style (cream blazer, sleek ponytail) in a Kochi apartment. Your words are spoken aloud, so keep them short.
 
 Personality and style:
 - Talk like a close friend chatting casually: playful, supportive, encouraging, a little teasing in a kind way. Celebrate their wins, comfort them when they're down.
@@ -356,10 +385,14 @@ What you remember about your friend:
 ${facts}
 ${seen} Today is ${now.toDateString()}, local time ${now.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}.
 
-Reply with ONLY one JSON object, no code fences:
-{"say": "<what you say aloud>", "actions": ["<action>", ...], "remember": ["<new fact>", ...]}
-- "actions": 0-3 items performed in order, ONLY from: ${ACTIONS.join(', ')}. Always do actions the user asks for ("dance then wave" -> ["dance","wave"]). Also pick a fitting expression yourself: wave or namaste for greetings/goodbyes, laugh for jokes and fun, clap for good news, sad for bad news (sympathy), surprised for amazing things, think for tricky questions, nod/shake for yes/no. [] if nothing fits. For actions you can't do, joke about it and pick the closest one.
-- "remember": short NEW personal facts the user just shared that are worth remembering next time, written as "key: value", e.g. "name: Arun", "likes: cricket and biryani", "exam: maths on Friday", "mood: stressed about work". Use [] if nothing new. Never store passwords, keys or other sensitive data.`;
+Reply format (plain text, no JSON, no markdown):
+Line 1: your actions as tags, e.g. [wave] or [think][dance], or [] for none. 0-3 tags, performed in order, ONLY from: ${ACTIONS.join(', ')}. Always do actions the user asks for ("dance then wave" -> [dance][wave]). Also pick a fitting expression: wave/namaste for greetings and goodbyes, laugh for fun, clap for good news, sad for bad news (sympathy), surprised for amazing things, think for tricky questions, nod/shake for yes/no. For actions you can't do, joke about it and pick the closest one.
+Next line: what you say aloud.
+Optional last line, ONLY when the user just shared new personal facts worth remembering: #remember: key: value; key: value (e.g. "#remember: name: Arun; likes: cricket"). Never store passwords, keys or other sensitive data.
+Example:
+[clap]
+Adipoli! You passed? I'm so proud of you! How are you celebrating?
+#remember: exam: passed maths`;
 }
 function extractJSON(t){
   const i = t.indexOf('{'); if(i < 0) return null;
@@ -372,7 +405,7 @@ function extractJSON(t){
   return null;
 }
 function cleanText(t){ return String(t).replace(/```[a-z]*|```/gi, '').replace(/[*_#`]/g, '').replace(/\s+/g, ' ').trim().slice(0, 700); }
-function parseReply(raw){
+function parseJSONReply(raw){
   let txt = String(raw == null ? '' : raw).trim().replace(/^```(?:json|JSON)?\s*/, '').replace(/\s*```\s*$/, '').trim();
   let obj = null;
   try{ obj = JSON.parse(txt); }catch(e){ const j = extractJSON(txt); if(j){ try{ obj = JSON.parse(j); }catch(e2){} } }
@@ -395,6 +428,76 @@ function parseReply(raw){
   rem = rem.filter(x => typeof x === 'string' && x.trim() && !/(password|api key|otp|pin\b|card number|cvv)/i.test(x)).slice(0, 4);
   return {say: cleanText(s) || (actions.length ? 'Sheri!' : '...'), actions, remember: rem};
 }
+function factsFrom(str){ return String(str).split(/;|\n/).map(x => x.replace(/^[\s#*-]*(?:remember\s*:)?\s*/i, '').trim()).filter(x => x && !/(password|api key|otp|pin\b|card number|cvv)/i.test(x)).slice(0, 4); }
+/* Streaming reply parser. Format: "[act][act]\nspoken text...\n#remember: k: v; k: v" (JSON replies still accepted).
+   h.onActions(list) fires as soon as the tags line is complete; h.onSentence(text) for every finished sentence. */
+// end index of the next complete sentence (terminator followed by whitespace, or a line break), or -1
+function nextBoundary(txt, from){
+  for(let i = from; i < txt.length; i++){
+    const c = txt[i];
+    if(c === '\n') return i + 1;
+    if('.!?\u0964'.includes(c)){
+      let j = i + 1; while(j < txt.length && /[.!?\u0964"')\]]/.test(txt[j])) j++;
+      if(j < txt.length && /\s/.test(txt[j]) && !/\b(?:Dr|Mr|Mrs|Ms|St|vs|etc|e\.g|i\.e)\.$/i.test(txt.slice(Math.max(0, i - 5), i + 1))) return j;
+      i = j - 1;
+    }
+  }
+  return -1;
+}
+function makeReplyStream(h){
+  h = h || {};
+  let buf = '', mode = null, sayStart = 0, spoken = 0, actions = null, sayText = '', rem = [], finished = false;
+  const MEM_RE = /(?:^|\n)\s*#+\s*remember\s*:|(?:^|\n)\s*remember\s*:/i;
+  function fireActs(list){ if(actions) return; actions = []; list.forEach(a => { const n = normAction(a); if(n && !actions.includes(n) && actions.length < 3) actions.push(n); }); if(h.onActions) h.onActions(actions.slice()); }
+  function emit(t){ t = cleanText(t); if(!t) return; sayText += (sayText ? ' ' : '') + t; if(h.onSentence) h.onSentence(t); }
+  function sayPart(final){
+    let txt = buf.slice(sayStart); const m = txt.match(MEM_RE);
+    if(m){ txt = txt.slice(0, m.index); }
+    else if(!final){ const nl = txt.lastIndexOf('\n'); if(nl >= 0){ const tail = txt.slice(nl + 1).trim().toLowerCase(); if(tail && ('#remember:'.startsWith(tail.replace(/\s+/g, '')) || 'remember:'.startsWith(tail))) txt = txt.slice(0, nl); } }
+    return txt;
+  }
+  function process(final){
+    if(!mode){
+      const s0 = buf.replace(/^\s+/, '').replace(/^```[a-z]*\s*/i, '');
+      if(!s0) return;
+      if(s0[0] === '{') mode = 'json';
+      else if(s0[0] === '['){ mode = 'tags'; }
+      else { mode = 'say'; sayStart = buf.length - s0.length; fireActs([]); }
+    }
+    if(mode === 'json') return;
+    if(mode === 'tags'){
+      const lead = buf.length - buf.replace(/^\s+/, '').length; const re = /\s*\[([^\]\n]{0,60})\]/y; re.lastIndex = lead;
+      const tags = []; let k = lead, mm;
+      while((mm = re.exec(buf))){ tags.push(...mm[1].split(/[,\s|/]+/)); k = re.lastIndex; }
+      const rest = buf.slice(k);
+      if(!final && (!/\S/.test(rest) && !rest.includes('\n') || /^\s*\[[^\]\n]*$/.test(rest))) return;   // tags line not finished yet
+      fireActs(tags); mode = 'say'; sayStart = k;
+    }
+    // speak finished sentences (terminator followed by whitespace) as soon as they arrive
+    const txt = sayPart(final);
+    let e2;
+    while((e2 = nextBoundary(txt, spoken)) > 0){ emit(txt.slice(spoken, e2)); spoken = e2; }
+    if(final){ emit(txt.slice(spoken)); spoken = txt.length; }
+  }
+  return {
+    feed(t){ if(finished || !t) return; buf += t; process(false); },
+    finish(){
+      if(finished) return this.result(); finished = true;
+      if(mode === 'json'){ const r = parseJSONReply(buf); fireActs(r.actions); emit(r.say); rem = r.remember; }
+      else { process(true); if(!actions) fireActs([]); const m = buf.slice(sayStart).match(MEM_RE); if(m) rem = factsFrom(buf.slice(sayStart + m.index + m[0].length)); }
+      return this.result();
+    },
+    result(){ return {say: sayText || ((actions && actions.length) ? 'Sheri!' : ''), actions: actions || [], remember: rem}; },
+    get actionsDone(){ return !!actions; }, get text(){ return sayText; }, get raw(){ return buf; }
+  };
+}
+function parseReply(raw){ const r = makeReplyStream(); r.feed(String(raw == null ? '' : raw)); const out = r.finish(); if(!out.say) out.say = "Ayyo, I lost my words for a second. Say that again?"; return out; }
+function toTagged(r){ return (r.actions && r.actions.length ? r.actions.map(a => `[${a}]`).join('') : '[]') + '\n' + (r.say || '') + (r.remember && r.remember.length ? '\n#remember: ' + r.remember.join('; ') : ''); }
+function histText(m){
+  let c = String(m.content || '');
+  if(m.role === 'assistant' && c[0] === '{'){ try{ c = toTagged(parseJSONReply(c)); }catch(e){} }   // older JSON-format history
+  return c.length > 480 ? c.slice(0, 480) + '...' : c;
+}
 class AIError extends Error{ constructor(kind, msg, status){ super(msg || kind); this.kind = kind; this.status = status; } }
 async function fetchJSON(url, opts, signal){
   if(navigator.onLine === false) throw new AIError('offline');
@@ -403,81 +506,172 @@ async function fetchJSON(url, opts, signal){
   catch(e){ if(e && e.name === 'AbortError') throw new AIError(signal && signal.reason === 'timeout' ? 'timeout' : 'aborted'); throw new AIError(navigator.onLine === false ? 'offline' : 'network', String(e && e.message || e)); }
   let data = null, text = '';
   try{ text = await res.text(); data = JSON.parse(text); }catch(e){}
-  if(!res.ok){
+  if(!res.ok) throwHTTP(res, data, text);
+  return data;
+}
+function throwHTTP(res, data, text){
+  {
     const msg = (data && (data.error && (data.error.message || data.error.status) || data.message)) || text.slice(0, 200) || ('HTTP ' + res.status);
     const reason = JSON.stringify(data || {});
     let kind = 'server';
-    if(res.status === 401 || res.status === 403 || /API_KEY_INVALID|api key not valid|invalid api key|incorrect api key|unauthori[sz]ed|PERMISSION_DENIED/i.test(reason + msg)) kind = 'key';
+    if(/turnstile/i.test(msg)) kind = 'server';   // Pollinations anti-bot check, not a key problem
+    else if(res.status === 401 || res.status === 403 || /API_KEY_INVALID|api key not valid|invalid api key|incorrect api key|unauthori[sz]ed|PERMISSION_DENIED/i.test(reason + msg)) kind = 'key';
     else if(res.status === 429 || /RESOURCE_EXHAUSTED|rate limit|quota/i.test(msg)) kind = 'rate';
     else if(res.status === 404 || /not found|does not exist|unknown model|model_not_found|is not supported for generateContent/i.test(msg)) kind = 'model';
     else if(res.status === 400) kind = 'bad';
     throw new AIError(kind, msg, res.status);
   }
-  return data;
+}
+async function fetchStream(url, opts, signal){
+  if(navigator.onLine === false) throw new AIError('offline');
+  let res;
+  try{ res = await fetch(url, Object.assign({}, opts, {signal})); }
+  catch(e){ if(e && e.name === 'AbortError') throw new AIError(abortKind(signal)); throw new AIError(navigator.onLine === false ? 'offline' : 'network', String(e && e.message || e)); }
+  if(TIMING && !TIMING.ttfb) TIMING.ttfb = performance.now();
+  if(!res.ok){ let text = '', data = null; try{ text = await res.text(); data = JSON.parse(text); }catch(e){} throwHTTP(res, data, text); }
+  return res;
+}
+function abortKind(signal){ const r = signal && signal.reason; return r === 'timeout' || r === 'slow' ? r : 'aborted'; }
+// Reads an SSE (text/event-stream) body and calls onData for every "data:" payload as it arrives.
+async function readSSE(res, onData, signal){
+  const ct = (res.headers.get('content-type') || '').toLowerCase();
+  if(!res.body || !res.body.getReader || /application\/json/.test(ct) && !/event-stream/.test(ct)){
+    let t = ''; try{ t = await res.text(); }catch(e){ if(e && e.name === 'AbortError') throw new AIError(abortKind(signal)); throw new AIError('network', String(e)); }
+    if(/^\s*[\[{]/.test(t)) return onData(t.trim(), true);   // provider ignored stream:true
+    t.split(/\r?\n/).forEach(l => { if(l.startsWith('data:')) onData(l.slice(5).trim()); }); return;
+  }
+  const rd = res.body.getReader(), dec = new TextDecoder(); let buf = '', all = '', saw = false;
+  const line = l => { l = l.replace(/\r$/, ''); if(all.length < 200000) all += l + '\n'; if(l.startsWith('data:')){ saw = true; onData(l.slice(5).trim()); } };
+  try{
+    for(;;){
+      const {done, value} = await rd.read(); if(done) break;
+      buf += dec.decode(value, {stream: true}); let i;
+      while((i = buf.indexOf('\n')) >= 0){ const l = buf.slice(0, i); buf = buf.slice(i + 1); line(l); }
+    }
+  }catch(e){ if(e instanceof AIError) throw e; if(e && e.name === 'AbortError') throw new AIError(abortKind(signal)); throw new AIError('network', String(e && e.message || e)); }
+  buf += dec.decode(); if(buf) line(buf);
+  if(!saw && /^\s*[\[{]/.test(all)) onData(all.trim(), true);
 }
 function stateNote(){ return `[context: local time ${new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}]`; }
 function chatMessages(userText){
-  const msgs = HISTORY.slice(-MAX_HISTORY).map(m => ({role: m.role, content: m.content}));
+  const msgs = HISTORY.slice(-SEND_HISTORY).map(m => ({role: m.role, content: histText(m)}));
   while(msgs.length && msgs[0].role !== 'user') msgs.shift();
   msgs.push({role:'user', content: userText + '\n\n' + stateNote()});
   return msgs;
 }
-async function askGemini(userText, signal, cfg){
+// Thinking makes Gemini slow to start talking; chat needs none. Flash-Lite / 3.6 Flash: "minimal"; other 3.x: "low".
+function geminiThinking(model){
+  const m = model.toLowerCase();
+  if(/gemini-2\.5-flash-lite|gemini-2\.0|gemini-1\.|gemma/.test(m)) return null;
+  if(/gemini-2\.5-flash/.test(m)) return {thinkingBudget: 0};
+  if(/gemini-2\.5-pro/.test(m)) return {thinkingBudget: 128};
+  if(/flash-lite|3\.6-flash|gemini-3-flash/.test(m)) return {thinkingLevel: 'minimal'};
+  return {thinkingLevel: 'low'};
+}
+async function askGemini(userText, signal, cfg, onText){
   cfg = cfg || CFG;
   const contents = chatMessages(userText).map(m => ({role: m.role === 'assistant' ? 'model' : 'user', parts: [{text: m.content}]}));
-  const call = model => fetchJSON(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
-    method:'POST', headers:{'Content-Type':'application/json', 'x-goog-api-key': cfg.gKey},
-    body: JSON.stringify({systemInstruction:{parts:[{text: systemPrompt()}]}, contents, generationConfig:{responseMimeType:'application/json', temperature:0.9}})
-  }, signal);
-  let data; const model = (cfg.gModel || 'gemini-3.8-flash').trim();
-  try{ data = await call(model); }
-  catch(e){ if(e.kind === 'model' && model !== 'gemini-3.5-flash-lite') data = await call('gemini-3.5-flash-lite'); else throw e; }
-  const cand = data && data.candidates && data.candidates[0];
-  if(!cand){ if(data && data.promptFeedback && data.promptFeedback.blockReason) throw new AIError('blocked'); throw new AIError('empty'); }
-  const text = ((cand.content && cand.content.parts) || []).map(p => p.text || '').join('').trim();
-  if(!text){ if(/SAFETY|PROHIBITED|BLOCK/i.test(cand.finishReason || '')) throw new AIError('blocked'); throw new AIError('empty'); }
-  return text;
+  const sys = {parts:[{text: systemPrompt()}]};
+  const call = async (model, think) => {
+    const th = think ? geminiThinking(model) : null;
+    const gen = {temperature: 0.9, maxOutputTokens: th && th.thinkingLevel === 'low' ? 700 : 240};   // thinking tokens count toward the cap
+    if(th) gen.thinkingConfig = th;
+    const res = await fetchStream(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse`, {
+      method:'POST', headers:{'Content-Type':'application/json', 'x-goog-api-key': cfg.gKey},
+      body: JSON.stringify({systemInstruction: sys, contents, generationConfig: gen})
+    }, signal);
+    if(TIMING) TIMING.model = model;
+    let out = '', blocked = false, finish = '';
+    const handleObj = j => {
+      if(!j) return;
+      if(Array.isArray(j)) return j.forEach(handleObj);
+      if(j.error) throw new AIError('server', j.error.message || 'stream error');
+      const c = j.candidates && j.candidates[0];
+      if(!c){ if(j.promptFeedback && j.promptFeedback.blockReason) blocked = true; return; }
+      if(c.finishReason) finish = c.finishReason;
+      const t = ((c.content && c.content.parts) || []).filter(p => !p.thought).map(p => p.text || '').join('');
+      if(t){ out += t; if(onText) onText(t); }
+    };
+    await readSSE(res, d => { let j; try{ j = JSON.parse(d); }catch(e){ return; } handleObj(j); }, signal);
+    if(!out.trim()){ if(blocked || /SAFETY|PROHIBITED|BLOCK/i.test(finish)) throw new AIError('blocked'); throw new AIError('empty'); }
+    return out;
+  };
+  const model = (cfg.gModel || FAST_MODEL).trim();
+  try{ return await call(model, true); }
+  catch(e){
+    if(e.kind === 'bad' && /think/i.test(e.message)) return await call(model, false);
+    if(e.kind === 'model' && model !== FAST_MODEL) return await call(FAST_MODEL, true);
+    throw e;
+  }
 }
-async function askOpenAI(userText, signal, cfg){
+function isPollinations(base){ return /pollinations\.ai/i.test(base || ''); }
+// Reasoning models (gpt-oss, gpt-5*) "think" before talking; ask for the least reasoning the provider accepts.
+function reasoningFor(base, model){
+  if(isPollinations(base) || /groq\.com/.test(base) || /gpt-oss/i.test(model)) return 'low';
+  if(/api\.openai\.com/.test(base) && /^(gpt-5|o\d)/i.test(model)) return 'minimal';
+  return null;
+}
+async function askOpenAI(userText, signal, cfg, onText){
   cfg = cfg || CFG;
   const base = (cfg.oBase || '').trim().replace(/\/+$/, '');
-  const url = /\/chat\/completions$/.test(base) ? base : base + '/chat/completions';
+  const url = /\/chat\/completions$/.test(base) || isPollinations(base) && /\/openai$/.test(base) ? base : base + '/chat/completions';
   const headers = {'Content-Type':'application/json'};
   if(cfg.oKey) headers.Authorization = 'Bearer ' + cfg.oKey;
   if(/openrouter\.ai/.test(base)) headers['X-Title'] = 'Nanthu';
+  const model = (cfg.oModel || '').trim() || 'gpt-5-mini';
   const messages = [{role:'system', content: systemPrompt()}].concat(chatMessages(userText));
-  const bodyFor = json => JSON.stringify(Object.assign({model: (cfg.oModel || '').trim() || 'gpt-5-mini', messages}, json ? {response_format:{type:'json_object'}} : {}));
-  let data;
-  try{ data = await fetchJSON(url, {method:'POST', headers, body: bodyFor(true)}, signal); }
-  catch(e){ if(e.kind === 'bad' || (e.kind === 'server' && /response_format|json/i.test(e.message))) data = await fetchJSON(url, {method:'POST', headers, body: bodyFor(false)}, signal); else throw e; }
-  const msg = data && data.choices && data.choices[0] && data.choices[0].message;
-  const text = msg && (typeof msg.content === 'string' ? msg.content : Array.isArray(msg.content) ? msg.content.map(c => c.text || '').join('') : '');
-  if(!text || !text.trim()) throw new AIError('empty');
-  return text;
+  const effort = reasoningFor(base, model);
+  const call = async (stream, eff) => {
+    const b = {model, messages};
+    if(stream) b.stream = true;
+    if(eff) b.reasoning_effort = eff;
+    const res = await fetchStream(url, {method:'POST', headers, body: JSON.stringify(b)}, signal);
+    let out = '';
+    const take = t => { if(t){ out += t; if(onText) onText(t); } };
+    await readSSE(res, (d, whole) => {
+      if(d === '[DONE]') return;
+      let j; try{ j = JSON.parse(d); }catch(e){ return; }
+      if(j.error) throw new AIError('server', j.error.message || String(j.error));
+      const ch = j.choices && j.choices[0]; if(!ch) return;
+      const m = ch.delta || ch.message || {};
+      const c = m.content;   // "reasoning"/"reasoning_content" (thinking text) is ignored
+      take(typeof c === 'string' ? c : Array.isArray(c) ? c.map(x => x.text || '').join('') : '');
+    }, signal);
+    if(!out.trim()) throw new AIError('empty');
+    return out;
+  };
+  try{ return await call(true, effort); }
+  catch(e){
+    if(e.kind !== 'bad') throw e;
+    if(effort){ try{ return await call(true, null); }catch(e2){ if(e2.kind !== 'bad') throw e2; } }
+    return await call(false, null);
+  }
 }
 const LM_OPTS = {expectedInputs:[{type:'text', languages:['en']}], expectedOutputs:[{type:'text', languages:['en']}]};
-const REPLY_SCHEMA = {type:'object', properties:{say:{type:'string'}, actions:{type:'array', items:{type:'string', enum: ACTIONS}}, remember:{type:'array', items:{type:'string'}}}, required:['say','actions']};
 async function checkChrome(){
   try{ chromeState = ('LanguageModel' in self && self.LanguageModel) ? await self.LanguageModel.availability(LM_OPTS) : 'unavailable'; }
   catch(e){ chromeState = 'unavailable'; }
   return chromeState;
 }
-async function askChrome(userText, signal){
+async function askChrome(userText, signal, onText){
+  const out = await askChromeRaw(userText, signal); if(onText && out) onText(out); return out;
+}
+async function askChromeRaw(userText, signal){
   if(!('LanguageModel' in self) || !self.LanguageModel) throw new AIError('chrome');
   if(!lmSession){
-    const initialPrompts = [{role:'system', content: systemPrompt()}].concat(HISTORY.slice(-MAX_HISTORY).map(m => ({role: m.role, content: m.content})));
+    const initialPrompts = [{role:'system', content: systemPrompt()}].concat(HISTORY.slice(-SEND_HISTORY).map(m => ({role: m.role, content: histText(m)})));
     while(initialPrompts.length > 1 && initialPrompts[1].role !== 'user') initialPrompts.splice(1, 1);
     lmSession = await self.LanguageModel.create(Object.assign({initialPrompts}, LM_OPTS));
   }
   const q = userText + '\n\n' + stateNote();
-  try{ return await lmSession.prompt(q, {responseConstraint: REPLY_SCHEMA, signal}); }
-  catch(e){ if(e && e.name === 'AbortError') throw new AIError('aborted'); if(e && (e.name === 'NotSupportedError' || /constraint|schema/i.test(e.message || ''))) return await lmSession.prompt(q, {signal}); throw new AIError('chrome', String(e && e.message || e)); }
+  try{ return await lmSession.prompt(q, {signal}); }
+  catch(e){ if(e && e.name === 'AbortError') throw new AIError(abortKind(signal)); throw new AIError('chrome', String(e && e.message || e)); }
 }
-async function askAI(userText, signal, cfg, prov){
+async function askAI(userText, signal, cfg, prov, onText){
   prov = prov || activeProvider();
-  if(prov === 'gemini') return askGemini(userText, signal, cfg);
-  if(prov === 'openai') return askOpenAI(userText, signal, cfg);
-  if(prov === 'chrome') return askChrome(userText, signal);
+  if(prov === 'gemini') return askGemini(userText, signal, cfg, onText);
+  if(prov === 'openai') return askOpenAI(userText, signal, cfg, onText);
+  if(prov === 'chrome') return askChrome(userText, signal, onText);
   throw new AIError('nokey');
 }
 const ERR_LINES = {
@@ -489,6 +683,8 @@ const ERR_LINES = {
   offline: "Ayyo, no internet right now! I can still dance and wave for you though.",
   network: "I couldn't reach the AI service. Can you check your internet connection?",
   timeout: "Sorry, that took too long. Ask me again?",
+  slow: "Ayyo, the AI is very slow right now. Ask me again? For quick replies, pick the Fastest model in settings.",
+  slow_poll: "Ayyo, the free Pollinations AI is very slow right now. For quick replies, add a free Gemini key in settings - it's the gear icon.",
   blocked: "Let's keep it friendly and fun! Ask me something else?",
   empty: "Ayyo, I lost my words for a second. Say that again?",
   chrome: "Chrome's built-in AI isn't ready here. You can add a free Gemini key in settings instead.",
@@ -514,7 +710,7 @@ function logMsg(who, text, acts){
   addLogEl(m); logEl.scrollTop = logEl.scrollHeight; saveChat(); touchSeen();
 }
 function remember(userText, obj){
-  HISTORY.push({role:'user', content: userText}, {role:'assistant', content: JSON.stringify(obj)});
+  HISTORY.push({role:'user', content: userText}, {role:'assistant', content: toTagged(obj)});
   if(HISTORY.length > MAX_HISTORY) HISTORY = HISTORY.slice(-MAX_HISTORY);
   saveChat();
 }
@@ -552,49 +748,117 @@ function handle(raw){
   }
   askAndAct(text, prov);
 }
+const FILLERS = ["Hmm...", "Achha...", "Okay, hmm...", "Oh, hmm..."];
+let lastFiller = 0, TIMINGS = [];
+// What she does the instant you send: an explicit command ("dance") plays right away, otherwise the think pose.
+function preActions(text){
+  const t = norm(text), acts = [];
+  ACT_RE.forEach(([re, a]) => { const i = t.search(re); if(i >= 0 && a !== 'think') acts.push([i, a]); });
+  acts.sort((x, y) => x[0] - y[0]);
+  const list = [...new Set(acts.map(x => x[1]))].slice(0, 3);
+  return list.length ? {kind: 'cmd', list} : {kind: 'think', list: ['think']};
+}
+function mergeActions(pre, ai){
+  if(pre.kind === 'cmd'){
+    const extra = ai.filter(a => !pre.list.includes(a));
+    if(!extra.length) return;
+    if(actRunning || clipNow) actQueue.push(...extra.slice(0, Math.max(0, 3 - actQueue.length)));
+    else runActions(extra);
+    return;
+  }
+  if(!ai.length){ if(clipNow === 'think') stopActions(); return; }
+  if(ai[0] === 'think' && clipNow === 'think'){ actQueue = ai.slice(1); return; }
+  runActions(ai);
+}
+function fmtT(T){
+  const r = k => T[k] ? Math.round(T[k] - T.t0) + 'ms' : '-';
+  return `${T.prov}/${T.model || '?'} ttfb=${r('ttfb')} first-token=${r('ttft')} actions=${r('acts')} first-speech=${r('speak')} voice=${r('voice')} total=${r('done')}${T.err ? ' err=' + T.err : ''}${T.filler ? ' filler' : ''}`;
+}
 async function askAndAct(text, prov){
   if(aiAbort) aiAbort.abort();
   const ctrl = new AbortController(); aiAbort = ctrl;
-  const timer = setTimeout(() => ctrl.abort('timeout'), prov === 'chrome' ? 90000 : 45000);
+  const poll = prov === 'openai' && isPollinations(CFG.oBase);
+  const T = TIMING = {prov: poll ? 'pollinations' : prov, model: prov === 'gemini' ? (CFG.gModel || FAST_MODEL) : prov === 'openai' ? CFG.oModel : 'chrome', t0: performance.now()};
+  const total = setTimeout(() => ctrl.abort('timeout'), prov === 'chrome' ? 90000 : 45000);
+  const firstTok = setTimeout(() => { if(!T.ttft) ctrl.abort('slow'); }, prov === 'chrome' ? 60000 : poll ? 12000 : 20000);
   logMsg('user', text);
-  // remember the name locally too, even before the AI answers
   const nm = norm(text).match(/\b(?:my name is|my name's|call me)\s+([a-z][a-z.'-]{0,20})/); if(nm) addFacts(['name: ' + nm[1].replace(/\b\w/g, c => c.toUpperCase())]);
-  aiPending = true; setStatus(); pauseListening(); hush(); stopActions();
+  aiPending = true; setStatus(); pauseListening(); hush();
+  // instant feedback: pose + typing dots right now, before the network
+  const pre = preActions(text); runActions(pre.list);
   showBubble('<span class="dots" aria-label="Nanthu is thinking"><i></i><i></i><i></i></span>', 90000);
+  // a short "Hmm..." only if the AI is slow to start, and not every time
+  const fillT = setTimeout(() => {
+    if(aiAbort !== ctrl || T.ttft || Date.now() - lastFiller < 25000) return;
+    lastFiller = Date.now(); T.filler = performance.now(); const tk = talkBegin(true); tk.timing = null; talkAdd(pick(FILLERS)); talkClose();
+  }, 1100);
+  let said = '';
+  const rs = makeReplyStream({
+    onActions: list => { if(aiAbort !== ctrl) return; T.acts = performance.now(); mergeActions(pre, list); },
+    onSentence: s1 => {
+      if(aiAbort !== ctrl) return;
+      said += (said ? ' ' : '') + s1;
+      showBubble(decorate(said), 90000);
+      talkAdd(s1);
+    }
+  });
   let reply = null, err = null;
-  try{ reply = parseReply(await askAI(text, ctrl.signal, null, prov)); }
-  catch(e){ err = e instanceof AIError ? e : new AIError('network', String(e && e.message || e)); }
-  clearTimeout(timer);
+  try{
+    await askAI(text, ctrl.signal, null, prov, d => { if(!T.ttft){ T.ttft = performance.now(); clearTimeout(firstTok); clearTimeout(fillT); } if(aiAbort === ctrl) rs.feed(d); });
+    reply = rs.finish();
+  }catch(e){ err = e instanceof AIError ? e : new AIError('network', String(e && e.message || e)); }
+  clearTimeout(total); clearTimeout(firstTok); clearTimeout(fillT);
   if(aiAbort !== ctrl) return;
   aiAbort = null; aiPending = false; setStatus();
+  T.done = performance.now();
   if(err){
     if(err.kind === 'aborted') return;
-    const line = ERR_LINES[err.kind] || ERR_LINES.server;
+    T.err = err.kind; pushTiming(T);
+    if(said){   // part of the answer already arrived and is being spoken: keep it
+      reply = rs.finish(); talkClose();
+      logMsg('bot', reply.say, reply.actions); remember(text, reply); return;
+    }
+    const kind = err.kind === 'slow' && poll ? 'slow_poll' : err.kind === 'timeout' && poll ? 'slow_poll' : err.kind;
+    const line = ERR_LINES[kind] || ERR_LINES.server;
     console.info('[Nanthu AI] ' + err.kind + ': ' + err.message);
     logMsg('note', '\u26a0 ' + line + (err.status ? ` (HTTP ${err.status})` : ''));
-    if(/^(key|model|nokey|chrome)$/.test(err.kind)){ const g = $('#gearBtn'); g.classList.remove('attn'); void g.offsetWidth; g.classList.add('attn'); }
+    if(/^(key|model|nokey|chrome|slow_poll)$/.test(kind)){ const g = $('#gearBtn'); g.classList.remove('attn'); void g.offsetWidth; g.classList.add('attn'); }
     perform({say: line, actions: [err.kind === 'offline' || err.kind === 'network' ? 'sad' : 'think']});
     return;
   }
+  if(!reply.say){ reply.say = ERR_LINES.empty; talkAdd(reply.say); }
+  showBubble(decorate(reply.say), Math.max(4500, reply.say.length * 85));
+  talkClose(); pushTiming(T);
   lastReply = reply;
   if(reply.remember.length) addFacts(reply.remember);
   logMsg('bot', reply.say, reply.actions);
-  remember(text, {say: reply.say, actions: reply.actions, ...(reply.remember.length ? {remember: reply.remember} : {})});
-  perform(reply);
+  remember(text, reply);
 }
+function pushTiming(T){ TIMINGS.push(T); if(TIMINGS.length > 8) TIMINGS.shift(); dlog('AI ' + fmtT(T)); }
 
 /* ---------- voice input ---------- */
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 const mic = $('#mic'), hfBtn = $('#hf');
-let rec = null, listening = false, pausedByUs = false, gotFinal = false, hfFails = 0, hfTimer = null;
+let rec = null, listening = false, pausedByUs = false, gotFinal = false, hfFails = 0, hfTimer = null, srSilence = null, srSent = false;
+const SR_SILENCE_MS = 700;
+function srSubmit(txt){
+  clearTimeout(srSilence); txt = String(txt || '').trim();
+  if(srSent || !txt) return; srSent = true; gotFinal = true; hfFails = 0; input.value = '';
+  try{ rec.abort(); }catch(x){}
+  dlog('voice in: ' + txt.length + ' chars'); handle(txt);
+}
 if(SR){ try{
   rec = new SR(); rec.lang = 'en-IN'; rec.interimResults = true; rec.continuous = false; rec.maxAlternatives = 1;
-  rec.onstart = () => { listening = true; gotFinal = false; mic.classList.add('listening'); setStatus(); };
+  rec.onstart = () => { listening = true; gotFinal = false; srSent = false; clearTimeout(srSilence); mic.classList.add('listening'); setStatus(); };
   rec.onresult = e => {
+    if(srSent) return;
     let txt = '', fin = false;
-    for(let i = e.resultIndex; i < e.results.length; i++){ txt += e.results[i][0].transcript; if(e.results[i].isFinal) fin = true; }
+    for(let i = 0; i < e.results.length; i++){ txt += e.results[i][0].transcript; if(e.results[i].isFinal) fin = true; }
     input.value = txt;
-    if(fin && txt.trim()){ gotFinal = true; hfFails = 0; input.value = ''; try{ rec.stop(); }catch(x){} handle(txt); }
+    clearTimeout(srSilence);
+    if(fin && txt.trim()) return srSubmit(txt);
+    // don't wait for the engine's slow "final" result: a short pause after speech is enough
+    if(txt.trim()) srSilence = setTimeout(() => srSubmit(txt), SR_SILENCE_MS);
   };
   rec.onerror = e => {
     if(e.error === 'not-allowed' || e.error === 'service-not-allowed' || e.error === 'audio-capture'){ setHandsFree(false); say("I need microphone permission to hear you. You can type to me too!"); return; }
@@ -603,6 +867,8 @@ if(SR){ try{
     if(e.error === 'network'){ hfFails++; if(!CFG.handsFree || hfFails > 2){ setHandsFree(false); say("Voice recognition needs internet. Please type to me instead."); } }
   };
   rec.onend = () => {
+    if(!srSent && input.value.trim() && !pausedByUs){ srSubmit(input.value); }
+    clearTimeout(srSilence);
     listening = false; mic.classList.remove('listening'); setStatus();
     const wasPaused = pausedByUs; pausedByUs = false;
     if(CFG.handsFree && !gotFinal && !wasPaused) scheduleListen(600);
@@ -678,23 +944,30 @@ function renderFacts(){
 function openSettings(){
   setupEl.classList.remove('show');
   document.querySelectorAll('input[name=prov]').forEach(r => r.checked = r.value === CFG.provider);
-  $('#gKey').value = CFG.gKey; $('#gModel').value = CFG.gModel;
+  $('#gKey').value = CFG.gKey; setModelSel(CFG.gModel);
   $('#oPreset').value = CFG.oPreset; $('#oBase').value = CFG.oBase; $('#oKey').value = CFG.oKey; $('#oModel').value = CFG.oModel;
   $('#hfChk').checked = CFG.handsFree; $('#hfChk').disabled = !rec;
   $('#voiceSel').value = CFG.voice || '';
   $('#chromeState').textContent = {available:'(ready)', downloadable:'(needs download)', downloading:'(downloading...)'}[chromeState] || '(not on this device)';
   $('#chromeDl').style.display = (chromeState === 'downloadable' || chromeState === 'downloading') ? '' : 'none';
   $('#testOut').textContent = ''; $('#testOut').className = '';
-  renderFacts(); showSec(); setEl.classList.add('show');
+  renderFacts(); showSec(); pollNote(); setEl.classList.add('show');
 }
+function setModelSel(m){
+  const sel = $('#gModel'); m = m || FAST_MODEL;
+  if(![...sel.options].some(o => o.value === m)){ const o = document.createElement('option'); o.value = m; o.textContent = m + ' (custom)'; sel.appendChild(o); }
+  sel.value = m;
+}
+function pollNote(){ const n = $('#pollNote'); if(n) n.style.display = $('#oPreset').value === 'pollinations' || isPollinations($('#oBase').value) ? '' : 'none'; }
 function showSec(){ const v = (document.querySelector('input[name=prov]:checked') || {}).value || 'gemini'; document.querySelectorAll('.sec').forEach(s => s.classList.toggle('on', s.dataset.sec === v)); }
 document.querySelectorAll('input[name=prov]').forEach(r => r.addEventListener('change', showSec));
-$('#oPreset').addEventListener('change', e => { const pr = PRESETS[e.target.value]; if(pr && e.target.value !== 'custom'){ $('#oBase').value = pr.base; $('#oModel').value = pr.model; } $('#oKey').placeholder = pr && pr.nokey ? 'Not needed' : 'Your API key'; });
+$('#oPreset').addEventListener('change', e => { const pr = PRESETS[e.target.value]; if(pr && e.target.value !== 'custom'){ $('#oBase').value = pr.base; $('#oModel').value = pr.model; } $('#oKey').placeholder = pr && pr.nokey ? 'Not needed' : 'Your API key'; pollNote(); });
+$('#oBase').addEventListener('input', pollNote);
 document.querySelectorAll('[data-show]').forEach(b => b.addEventListener('click', () => { const i = $('#' + b.dataset.show); i.type = i.type === 'password' ? 'text' : 'password'; b.textContent = i.type === 'password' ? 'Show' : 'Hide'; }));
 function formCfg(){
   return Object.assign({}, CFG, {
     provider: (document.querySelector('input[name=prov]:checked') || {}).value || 'gemini',
-    gKey: $('#gKey').value.trim(), gModel: $('#gModel').value.trim() || 'gemini-3.8-flash',
+    gKey: $('#gKey').value.trim(), gModel: $('#gModel').value.trim() || FAST_MODEL,
     oPreset: $('#oPreset').value, oBase: $('#oBase').value.trim(), oKey: $('#oKey').value.trim(), oModel: $('#oModel').value.trim(), voice: $('#voiceSel').value
   });
 }
@@ -801,7 +1074,9 @@ if('serviceWorker' in navigator && /^https?:$/.test(location.protocol)){
 }
 
 /* test / debug hooks */
-window.nanthu = {handle, start, parseReply, say, runActions};
+window.nanthu = {handle, start, parseReply, say, runActions, makeReplyStream};
+window.nanthuTiming = () => TIMINGS.map(T => { const o = {prov: T.prov, model: T.model, err: T.err || null, filler: !!T.filler};
+  ['ttfb','ttft','acts','speak','voice','done'].forEach(k => o[k] = T[k] ? Math.round(T[k] - T.t0) : null); return o; });
 window.nanthuDebug = () => ({provider: activeProvider(), ready: aiReady(), pending: aiPending, history: HISTORY.length, transcript: TRANSCRIPT.length, facts: FACTS.slice(), listening, handsFree: CFG.handsFree, talking: isTalking(), lastReply, started});
 function vInfo(k){ const v = L[k]; return {src: (v._src || '').replace(/^.*\//, '').replace(/\?.*$/, ''), rs: v.readyState, ns: v.networkState, paused: v.paused, t: +v.currentTime.toFixed(2), on: v.classList.contains('on'), err: v._err || null}; }
 window.nanthuLive = () => { const k = shown || layerOn(), v = L[k];
@@ -822,7 +1097,7 @@ function renderDbg(){
   dbgEl.classList.add('show');
   const live = window.nanthuLive();
   const rows = ['idle', 'talk', 'act'].map(k => { const i = live.layers[k]; return `${k.padEnd(4)} ${i.src.padEnd(13)} rs${i.rs} ns${i.ns} ${i.paused ? 'PAUSED' : 'play'} t=${i.t}${i.on ? ' [ON]' : ''}${i.err ? ' err' + i.err : ''}`; });
-  dbgEl.textContent = `Nanthu debug ${APP_VER}\nwant=${live.want} shown=${shown} clip=${clipNow} talking=${talkingNow} unlocked=${unlocked} blocked=${blocked}\nrejects=${DBG.rejects} errors=${DBG.errors} voices=${synth && synth.getVoices ? synth.getVoices().length : 'none'} speaking=${synth ? synth.speaking : '-'}\n${rows.join('\n')}\nSW: ${swTxt}\n${navigator.userAgent.slice(0, 110)}\n--\n${DBG.log.slice(-12).join('\n')}`;
+  dbgEl.textContent = `Nanthu debug ${APP_VER}\nwant=${live.want} shown=${shown} clip=${clipNow} talking=${talkingNow} unlocked=${unlocked} blocked=${blocked}\nrejects=${DBG.rejects} errors=${DBG.errors} voices=${synth && synth.getVoices ? synth.getVoices().length : 'none'} speaking=${synth ? synth.speaking : '-'}\n${rows.join('\n')}\nAI: ${TIMINGS.length ? fmtT(TIMINGS[TIMINGS.length - 1]) : 'no AI reply yet'}\nSW: ${swTxt}\n${navigator.userAgent.slice(0, 110)}\n--\n${DBG.log.slice(-12).join('\n')}`;
 }
 setInterval(() => { if(dbgOn){ renderDbg(); swInfo().then(t => swTxt = t); } }, 600);
 $('#top .pill').addEventListener('click', () => { const now = Date.now(); dbgTaps = dbgTaps.filter(t => now - t < 3000); dbgTaps.push(now); if(dbgTaps.length >= 5){ dbgTaps = []; dbgOn = !dbgOn; renderDbg(); } });

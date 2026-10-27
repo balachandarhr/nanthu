@@ -28,6 +28,13 @@ Open it and tap **"Tap to start talking to Nanthu"**. This tap turns on her voic
 In ⚙ Settings you can also choose any OpenAI-compatible provider, a free keyless option (Pollinations), or Chrome's built-in AI (desktop Chrome only).
 Without a key she still does simple things: dance, wave, tell a joke, the time, and remembering your name.
 
+## Fast replies
+- She streams the answer and starts speaking as soon as the first sentence arrives. Her pose changes the moment you send a message.
+- In ⚙ Settings → Model, **Fastest - 3.5 Flash-Lite** is the default and is recommended. **Smartest - 3.8 Flash** gives deeper answers but replies more slowly.
+- Pollinations (free, no key) is often slow, with replies taking 5–30 s. A free Gemini key is much faster. If Pollinations doesn't answer within 12 s, she tells you so.
+- With voice input she sends what you said about 0.7 s after you stop talking.
+- To see the speed, open with `?debug=1`. The `AI:` line shows first-token and first-speech times.
+
 ## Privacy
 - Your key is stored only in this browser's localStorage. It is sent only to the AI provider you choose.
 - Chat history and a short list of facts about you (name, likes) are kept on the phone so she remembers you. To delete them, use "Clear chat" in the chat drawer, or Settings → "Forget me".
