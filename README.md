@@ -3,7 +3,7 @@
 Nanthu is a portrait phone app. She talks to you, answers your questions and chats like a close friend from Kochi, with video actions: wave, namaste, dance, laugh, clap, think, sad and surprised. It is a static Progressive Web App (PWA): just HTML, CSS and JS plus ten short videos (about 10 MB). It has no server of its own.
 
 ## Files
-index.html, style.v3.css, app.v3.js, manifest.json, sw.js (caches the app shell; videos load directly), icons/, videos/
+index.html, style.v4.css, app.v4.js, manifest.json, sw.js (caches the app shell; videos load directly), icons/, videos/
 
 ## Try it on a computer
     cd nanthu-mobile && python3 -m http.server 8000

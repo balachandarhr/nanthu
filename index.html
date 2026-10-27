@@ -7,7 +7,7 @@
 <meta name="description" content="Nanthu - your Malayali AI friend who talks with you, answers your questions and acts things out.">
 <script>/* Android Chrome: let the keyboard resize the layout (WebKit warns about this key, so add it only on Android) */
 if(/Android/i.test(navigator.userAgent)){ const m = document.querySelector('meta[name=viewport]'); m.content += ', interactive-widget=resizes-content'; }</script>
-<meta name="theme-color" content="#1f4a40">
+<meta name="theme-color" content="#1b1830">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Nanthu">
@@ -15,12 +15,12 @@ if(/Android/i.test(navigator.userAgent)){ const m = document.querySelector('meta
 <link rel="manifest" href="manifest.json">
 <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
-<link rel="stylesheet" href="style.v3.css">
+<link rel="stylesheet" href="style.v4.css">
 </head>
 <body>
 <div id="stage" aria-hidden="true">
-  <img id="backdrop" src="videos/poster.jpg" alt="">
-  <div id="vbox"><img id="poster" src="videos/poster.jpg" alt=""><div id="vfade"></div></div>
+  <img id="backdrop" src="videos/poster.jpg?v=4" alt="">
+  <div id="vbox"><img id="poster" src="videos/poster.jpg?v=4" alt=""><div id="vfade"></div></div>
 </div>
 
 <header id="top">
@@ -65,7 +65,7 @@ if(/Android/i.test(navigator.userAgent)){ const m = document.querySelector('meta
 </footer>
 
 <div id="splash">
-  <img class="sbg" src="videos/poster.jpg" alt="">
+  <img class="sbg" src="videos/poster.jpg?v=4" alt="">
   <button type="button" id="startBtn">
     <img src="icons/icon-512.png" alt="Nanthu">
     <b>Tap to start talking to Nanthu</b>
@@ -131,6 +131,6 @@ if(/Android/i.test(navigator.userAgent)){ const m = document.querySelector('meta
     <div class="row sticky"><button type="button" id="setSave" class="primary">Save</button></div>
   </div>
 </div>
-<script src="app.v3.js"></script>
+<script src="app.v4.js"></script>
 </body>
 </html>

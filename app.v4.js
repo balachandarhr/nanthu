@@ -2,7 +2,8 @@
    No server: AI calls go straight from the phone to the provider the user chose. */
 (() => {
 'use strict';
-const APP_VER = 'v3';
+const APP_VER = 'v4';
+const VQ = '?v=4';   // video cache-buster for the new look
 const $ = s => document.querySelector(s);
 const body = document.body, statusEl = $('#status'), input = $('#cmd'), bubble = $('#bubble');
 
@@ -75,7 +76,7 @@ function mkVideo(name, src, loop){
   vbox.insertBefore(v, posterEl.nextSibling); return v;
 }
 let clipNow = null, talkingNow = false, idleReady = false, unlocked = false, blocked = false, clipEndCb = null, clipTimer = null, clipStartTimer = null, actName = 'namaste', shown = null;
-const L = {idle: mkVideo('idle', 'videos/idle.mp4', true), talk: mkVideo('talk', 'videos/talk.mp4', true), act: mkVideo('act', 'videos/namaste.mp4', true)};
+const L = {idle: mkVideo('idle', 'videos/idle.mp4' + VQ, true), talk: mkVideo('talk', 'videos/talk.mp4' + VQ, true), act: mkVideo('act', 'videos/namaste.mp4' + VQ, true)};
 L.act.preload = 'auto';
 posterEl.classList.add('on');
 function layerOn(){ return clipNow ? 'act' : (talkingNow ? 'talk' : 'idle'); }
@@ -115,14 +116,14 @@ function unlockVideos(){
 const startLoops = unlockVideos;
 function prefetchClips(){   // warm the HTTP cache so action clips start fast (best effort)
   let i = 0; const list = CLIPS.filter(n => !LOOPS[n]);
-  const next = () => { const n = list[i++]; if(!n) return; fetch('videos/' + n + '.mp4').then(r => r.blob()).catch(() => {}).then(() => setTimeout(next, 150)); };
+  const next = () => { const n = list[i++]; if(!n) return; fetch('videos/' + n + '.mp4' + VQ).then(r => r.blob()).catch(() => {}).then(() => setTimeout(next, 150)); };
   setTimeout(next, 2500);
 }
 function playClip(n, cb){
   clearTimeout(clipTimer); clearTimeout(clipStartTimer);
   const old = clipEndCb; clipEndCb = null; if(old) old();
   clipNow = n; clipEndCb = cb || null;
-  const v = L.act, src = 'videos/' + n + '.mp4';
+  const v = L.act, src = 'videos/' + n + '.mp4' + VQ;
   if(v._src !== src){ v._src = src; v._tries = 0; v.src = src; try{ v.load(); }catch(e){} }
   else if(v.ended || v.currentTime > 0.3){
     // replay: seek only when fully loaded; otherwise reload the source (seeking mid-preload can stall decoders)
@@ -143,8 +144,9 @@ let actLastT = 0;
 L.act.addEventListener('ended', () => { if(clipNow) endClip(); });
 L.act.addEventListener('timeupdate', () => {
   const v = L.act, t = v.currentTime, d = v.duration;
-  if(!clipNow || v._playingClip !== clipNow || !(v.currentSrc || '').endsWith('/' + clipNow + '.mp4')){ actLastT = 0; return; }   // stale event from previous clip
-  if((isFinite(d) && d > 1 && t >= d - 0.15) || (actLastT > 1 && t + 0.5 < actLastT)){ actLastT = 0; try{ v.pause(); }catch(e){} endClip(); return; }
+  if(!clipNow || v._playingClip !== clipNow || !(v.currentSrc || '').includes('/' + clipNow + '.mp4')){ actLastT = 0; return; }   // stale event from previous clip
+  // only a jump back from near the end counts as a loop wrap (some engines glitch mid-clip)
+  if((isFinite(d) && d > 1 && t >= d - 0.15) || (actLastT > 1 && t + 0.5 < actLastT && (!isFinite(d) || actLastT >= d - 1.2))){ actLastT = 0; try{ v.pause(); }catch(e){} endClip(); return; }
   actLastT = t;
 });
 function setTalking(on){ talkingNow = !!on; updateVideo(); }
@@ -338,7 +340,7 @@ function systemPrompt(){
   const now = new Date();
   const facts = FACTS.length ? FACTS.map(f => '- ' + f).join('\n') : '- (nothing yet - get to know them!)';
   const seen = lastSeen ? `You last chatted ${ago(Date.now() - lastSeen)} ago.` : 'This may be your first chat.';
-  return `You are Nanthu, a warm, caring and fun young Malayali woman from Kochi, Kerala - and the user's close friend (a best-friend vibe, never a romantic partner). You appear on their phone as a real-looking young woman in a mint kurti and jeans at a cosy Kochi cafe balcony. Your words are spoken aloud.
+  return `You are Nanthu, a warm, caring and fun young Malayali woman from Kochi, Kerala - and the user's close friend (a best-friend vibe, never a romantic partner). You appear on their phone as a real-looking young woman with an ultra-modern city style (cream oversized blazer, black high-neck top, wide-leg trousers, sleek high ponytail) in a high-rise Kochi apartment with a golden-hour skyline view. Your words are spoken aloud.
 
 Personality and style:
 - Talk like a close friend chatting casually: playful, supportive, encouraging, a little teasing in a kind way. Celebrate their wins, comfort them when they're down.
@@ -800,7 +802,7 @@ if('serviceWorker' in navigator && /^https?:$/.test(location.protocol)){
 /* test / debug hooks */
 window.nanthu = {handle, start, parseReply, say, runActions};
 window.nanthuDebug = () => ({provider: activeProvider(), ready: aiReady(), pending: aiPending, history: HISTORY.length, transcript: TRANSCRIPT.length, facts: FACTS.slice(), listening, handsFree: CFG.handsFree, talking: isTalking(), lastReply, started});
-function vInfo(k){ const v = L[k]; return {src: (v._src || '').replace(/^.*\//, ''), rs: v.readyState, ns: v.networkState, paused: v.paused, t: +v.currentTime.toFixed(2), on: v.classList.contains('on'), err: v._err || null}; }
+function vInfo(k){ const v = L[k]; return {src: (v._src || '').replace(/^.*\//, '').replace(/\?.*$/, ''), rs: v.readyState, ns: v.networkState, paused: v.paused, t: +v.currentTime.toFixed(2), on: v.classList.contains('on'), err: v._err || null}; }
 window.nanthuLive = () => { const k = shown || layerOn(), v = L[k];
   return {on: k === 'act' ? actName : k, layer: k, want: layerOn(), clip: clipNow, talking: talkingNow, failed: false, blocked, unlocked, ready: Object.keys(L).filter(x => L[x].readyState >= 3).length,
     t: +v.currentTime.toFixed(2), paused: v.paused, layers: {idle: vInfo('idle'), talk: vInfo('talk'), act: vInfo('act')}, rejects: DBG.rejects, errors: DBG.errors}; };
